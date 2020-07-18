@@ -20,7 +20,9 @@ func wrapHandler(h http.Handler) http.HandlerFunc {
 		srw := &StatusRespWr{ResponseWriter: w}
 
 		h.ServeHTTP(srw, r)
-		log.Printf("%s - \"%s %s %s\" %d 0 \"%s\"", r.RemoteAddr, r.Method, r.RequestURI, r.Proto, srw.status, r.UserAgent())
+
+		log.Printf("%s - \"%s %s %s\" %d %d \"%s\"", r.RemoteAddr, r.Method, r.RequestURI,
+			r.Proto, srw.status, r.ContentLength, r.UserAgent())
 	}
 }
 
