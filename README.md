@@ -13,3 +13,13 @@ A really minimal HTTP Server for static files written in GO
 ```
 docker run -p 8080:8080 -v /path/to/local/html:/static byjg/static-httpserver
 ```
+
+## Create your own image
+
+Dockerfile
+
+```
+FROM byjg/static-httpserver:latest
+
+COPY /path/to/html /static
+```
