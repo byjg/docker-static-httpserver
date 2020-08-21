@@ -1,13 +1,87 @@
-<html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>{{ .HtmlTitle }}</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+<!--===============================================================================================-->    
+    <link rel="icon" type="image/png" href="images/icons/favicon.ico"/>
+<!--===============================================================================================-->
+    <link rel="stylesheet" type="text/css" href="vendor/bootstrap/css/bootstrap.min.css">
+<!--===============================================================================================-->
+    <link rel="stylesheet" type="text/css" href="fonts/font-awesome-4.7.0/css/font-awesome.min.css">
+<!--===============================================================================================-->
+    <link rel="stylesheet" type="text/css" href="vendor/animate/animate.css">
+<!--===============================================================================================-->
+    <link rel="stylesheet" type="text/css" href="vendor/select2/select2.min.css">
+<!--===============================================================================================-->
+    <link rel="stylesheet" type="text/css" href="css/util.css">
+    <link rel="stylesheet" type="text/css" href="css/main.css">
+<!--===============================================================================================-->
+</head>
+<body>
+    
+    
+    <div class="size1 bg0 where1-parent">
+        <!-- Coutdown -->
+        <div class="flex-c-m bg-img1 size2 where1 overlay1 where2 respon2" style="{{ if .Image }}background-image: url('{{ .Image }}');{{ end }}">
+        </div>
+        
+        <!-- Form -->
+        <div class="size3 flex-col-sb flex-w p-l-75 p-r-75 p-t-45 p-b-45 respon1">
+            <div class="m1-txt3">
+                {{ .Title }}<span class="m1-txt3-green">.</span>
+            </div>
 
-    <h1>Instructions</h1>
+            <div class="p-t-50 p-b-60">
+                <p class="m1-txt1 p-b-36">
+                    {{ .Message }}
+                </p>
 
-    To use your own static files run:
+            </div>
 
-    <div>
-        <code>
-        docker run -p 8080:8080 -v /your/path/to/static:/static byjg/static-httpserver
-        </code>
+            <div class="flex-w">
+                {{ if .Facebook }}
+                <a href="{{ .Facebook }}" class="flex-c-m size5 bg3 how1 trans-04 m-r-5">
+                    <i class="fa fa-facebook"></i>
+                </a>
+                {{ end }}
+
+                {{ if .Twitter }}
+                <a href="{{ .Twitter }}" class="flex-c-m size5 bg4 how1 trans-04 m-r-5">
+                    <i class="fa fa-twitter"></i>
+                </a>
+                {{ end }}
+
+                {{ if .Youtube }}
+                <a href="{{ .Youtube }}" class="flex-c-m size5 bg5 how1 trans-04 m-r-5">
+                    <i class="fa fa-youtube-play"></i>
+                </a>
+                {{ end }}
+            </div>
+        </div>
     </div>
 
+
+
+    
+
+<!--===============================================================================================-->    
+    <script src="vendor/jquery/jquery-3.2.1.min.js"></script>
+<!--===============================================================================================-->
+    <script src="vendor/bootstrap/js/popper.js"></script>
+    <script src="vendor/bootstrap/js/bootstrap.min.js"></script>
+<!--===============================================================================================-->
+    <script src="vendor/select2/select2.min.js"></script>
+<!--===============================================================================================-->
+    <script src="vendor/tilt/tilt.jquery.min.js"></script>
+    <script >
+        $('.js-tilt').tilt({
+            scale: 1.1
+        })
+    </script>
+<!--===============================================================================================-->
+    <script src="js/main.js"></script>
+
+</body>
 </html>
