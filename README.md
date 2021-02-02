@@ -1,6 +1,10 @@
-# docker-static-httpserver
+# Static http server
 
-A really minimal HTTP Server for static files written in GO
+[![Opensource ByJG](https://img.shields.io/badge/opensource-byjg-success.svg)](http://opensource.byjg.com)
+[![GitHub source](https://img.shields.io/badge/Github-source-informational?logo=github)](https://github.com/byjg/docker-static-httpserver/)
+[![GitHub license](https://img.shields.io/github/license/byjg/docker-static-httpserver.svg)](https://opensource.byjg.com/opensource/licensing.html)
+
+A really minimal HTTP Server image for static files written in GO
 
 ## Why?
 
@@ -13,7 +17,9 @@ A really minimal HTTP Server for static files written in GO
 - latest - The latest image with a coming soon template
 - tiny - A really minimalist image. You need to replace the volume ot build your own on top of this one.  
 
-## How to use?
+## How to use the "Coming soon template"?
+
+![Coming soon page](https://raw.github.com/byjg/docker-static-httpserver/master/preview.png)
 
 The image has the coming soon template and can be customized by setting the environment variables:
 - HTML_TITLE
@@ -30,7 +36,7 @@ e.g.
 docker run -p 8080:8080 -e TITLE=soon -e "MESSAGE=Keep In Touch" byjg/static-httpserver
 ```
 
-## Changing the volume
+## Use your own static pages
 
 ```
 docker run -p 8080:8080 -v /path/to/local/html:/static byjg/static-httpserver:tiny
@@ -46,3 +52,6 @@ FROM byjg/static-httpserver:tiny
 
 COPY /path/to/html /static
 ```
+
+----
+[Open source ByJG](http://opensource.byjg.com)
