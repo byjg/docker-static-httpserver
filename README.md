@@ -49,7 +49,8 @@ Minimal configuration
 helm repo add byjg https://opensource.byjg.com/helm
 helm repo update
 helm upgrade --install mysite byjg/static-httpserver \
-    --set ingress.hosts={www.example.org,example.org}
+    --namespace default \
+    --set "ingress.hosts={www.example.org,example.org}" \
     --set parameters.title=Welcome
 ```
 
