@@ -1,0 +1,142 @@
+name: Docker
+
+on:
+  # schedule:
+  #  - cron: '0 10 1 * *'
+  push:
+    branches: [ master ]
+    # Publish semver tags as releases.
+    tags: [ '*.*.*' ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  # github.repository as <account>/<repo>
+  IMAGE_NAME: byjg/static-httpserver
+
+
+jobs:
+  Test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Install requirements
+        run: |
+          cd src/
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: |
+          cd src/
+          pytest -s tests/ -vv
+
+  Build:
+    runs-on: ubuntu-latest
+    needs: Test
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+
+      - name: Log into registry
+        if: github.event_name != 'pull_request' || github.event.inputs.push == 'true'
+        uses: docker/login-action@v1
+        with:
+          registry: ${{ secrets.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_REGISTRY_USER }}
+          password: ${{ secrets.DOCKER_REGISTRY_TOKEN }}
+
+      # Extract metadata (tags, labels) for Docker
+      # https://github.com/docker/metadata-action
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v3
+        with:
+          images: ${{ secrets.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - uses: actions/github-script@v6
+        id: tags
+        with:
+          script: |
+            tags = `${{ join(steps.meta.outputs.tags, ',') }}`
+            result = []
+            tags.split("\n").forEach(function (item) {
+              short_tag = item.trim().split(":")[1]; 
+              if (short_tag != "latest") {
+                result.push(short_tag);
+              }
+            })
+            return result.join("-");
+          result-encoding: string
+      - name: Get result
+        run: echo "${{steps.set-result.outputs.result}}"
+
+      # Build and push Docker image with Buildx (don't push on PR)
+      # https://github.com/docker/build-push-action
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          file: build/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' || github.event.inputs.push == 'true' }}
+          tags: |
+            ${{ secrets.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ secrets.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest-${{ steps.tags.outputs.result }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      # Build and push Docker image with Buildx (don't push on PR)
+      # https://github.com/docker/build-push-action
+      - name: Build and push Docker image (TINY)
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          file: build/Dockerfile-tiny
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' || github.event.inputs.push == 'true' }}
+          tags: |
+            ${{ secrets.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:tiny
+            ${{ secrets.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:tiny-${{ steps.tags.outputs.result }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      # - name: Docker Hub Description
+      #   if: github.event_name != 'pull_request' || github.event.inputs.push == 'true'
+      #   run: |
+      #     wget -q  https://github.com/christian-korneck/docker-pushrm/releases/download/v1.8.0/docker-pushrm_linux_amd64 -O $HOME/.docker/cli-plugins/docker-pushrm
+      #     chmod +x $HOME/.docker/cli-plugins/docker-pushrm
+      #     docker pushrm ${{ env.IMAGE_NAME }}
+
+  # Helm:
+  #   runs-on: 'ubuntu-latest'
+  #   needs: Build
+  #   # if: github.ref == 'refs/heads/master'
+  #   env:
+  #     DOC_GITHUB_TOKEN: '${{ secrets.DOC_TOKEN }}'
+  #   steps:
+  #     - uses: actions/checkout@v2
+  #     - run: curl https://opensource.byjg.com/add-helm.sh | bash /dev/stdin helm easyhaproxy-ingress
+
+  Documentation:
+    runs-on: 'ubuntu-latest'
+    needs: Build
+    if: github.ref == 'refs/heads/master'
+    env:
+      DOC_GITHUB_TOKEN: '${{ secrets.DOC_TOKEN }}'
+    steps:
+      - uses: actions/checkout@v2
+      - run: curl https://opensource.byjg.com/add-doc.sh | bash /dev/stdin devops docker-static-httpserver
