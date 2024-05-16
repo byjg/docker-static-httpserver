@@ -73,6 +73,28 @@ parameters:
 This HELM package is setup to work with [EasyHAProxy](https://github.com/byjg/docker-easy-haproxy)
 ```
 
+## Enabling as Addon on MicroK8s
+
+The Parking addon deploys a static webserver to ‘park’ a domain. This involves all
+necessary ingress, service and Pods. This addon adds the proper labels which can be
+discovered by EasyHAProxy.
+
+To enable this addon:
+
+```
+microk8s enable parking <domainlist>
+```
+
+… where domainlist is the comma separated list of domains to be parked.
+
+To disable the addon:
+
+```
+microk8s disable parking
+```
+
+Follow this discussion: [https://discuss.kubernetes.io/t/addon-parking/23186](https://discuss.kubernetes.io/t/addon-parking/23186)
+
 ## Use your own static pages
 
 ```
