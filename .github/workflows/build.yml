@@ -107,7 +107,7 @@ jobs:
     with:
       repo: ${{ github.event.repository.name }}
       folder: helm
-      project: easyhaproxy
+      project: static-httpserver
     secrets: inherit
 
   Documentation:
