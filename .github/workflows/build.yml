@@ -102,7 +102,7 @@ jobs:
 
   HelmDeploy:
     if: github.ref == 'refs/heads/master'
-    needs: Helm
+    needs: Build
     uses: byjg/byjg.github.io/.github/workflows/add-helm.yaml@master
     with:
       repo: ${{ github.event.repository.name }}
