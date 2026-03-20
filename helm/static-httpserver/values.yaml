@@ -46,6 +46,10 @@ parameters:
   facebook: ""
   twitter: ""
   youtube: ""
+  spaMode: ""
+  port: ""
+  cacheMaxSize: ""
+  cacheMaxFileSize: ""
 
 
 resources: {}

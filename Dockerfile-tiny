@@ -1,10 +1,9 @@
-FROM docker.io/golang:latest as builder
+FROM docker.io/golang:latest AS builder
 WORKDIR /app
-COPY src/server.go .
-RUN go env -w GO111MODULE=off
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o server .
+COPY src/ .
+RUN CGO_ENABLED=0 GOOS=linux go build -o server .
 
-FROM alpine:latest  
+FROM alpine:latest
 RUN apk --no-cache add ca-certificates
 WORKDIR /root/
 COPY basic /static

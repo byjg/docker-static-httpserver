@@ -38,11 +38,11 @@ spec:
               protocol: TCP
           livenessProbe:
             httpGet:
-              path: /
+              path: /health
               port: http
           readinessProbe:
             httpGet:
-              path: /
+              path: /health
               port: http
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
@@ -74,6 +74,22 @@ spec:
             {{- if .Values.parameters.youtube }}
             - name: YOUTUBE
               value: {{ .Values.parameters.youtube }}
+            {{- end }}
+            {{- if .Values.parameters.spaMode }}
+            - name: SPA_MODE
+              value: {{ .Values.parameters.spaMode | quote }}
+            {{- end }}
+            {{- if .Values.parameters.port }}
+            - name: PORT
+              value: {{ .Values.parameters.port | quote }}
+            {{- end }}
+            {{- if .Values.parameters.cacheMaxSize }}
+            - name: CACHE_MAX_SIZE
+              value: {{ .Values.parameters.cacheMaxSize | quote }}
+            {{- end }}
+            {{- if .Values.parameters.cacheMaxFileSize }}
+            - name: CACHE_MAX_FILE_SIZE
+              value: {{ .Values.parameters.cacheMaxFileSize | quote }}
             {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
