@@ -15,23 +15,15 @@ buildah login --username $DOCKER_USERNAME --password $DOCKER_PASSWORD $DOCKER_RE
 
 podman run --rm --events-backend=file --cgroup-manager=cgroupfs --privileged docker://multiarch/qemu-user-static --reset -p yes
 
-VERSIONS="latest tiny"
-for VERSION in $VERSIONS
-do
-  DOCKERFILE=Dockerfile
-  if [ "$VERSION" == "tiny" ]
-  then
-    DOCKERFILE=$DOCKERFILE-tiny
-  fi 
-  
-  buildah manifest create byjg/static-httpserver:$VERSION
+VERSION="latest"
 
-  buildah bud --arch arm64 --os linux --iidfile /tmp/iid-arm64 -f $DOCKERFILE -t byjg/static-httpserver:$VERSION-arm64 .
-  buildah bud --arch amd64 --os linux --iidfile /tmp/iid-amd64 -f $DOCKERFILE -t byjg/static-httpserver:$VERSION-amd64 .
+buildah manifest create byjg/static-httpserver:$VERSION
 
-  buildah manifest add byjg/static-httpserver:$VERSION --arch arm64 --os linux --variant v8 $(cat /tmp/iid-arm64)
-  buildah manifest add byjg/static-httpserver:$VERSION --arch amd64 --os linux --os=linux $(cat /tmp/iid-amd64)
+buildah bud --arch arm64 --os linux --iidfile /tmp/iid-arm64 -f Dockerfile -t byjg/static-httpserver:$VERSION-arm64 .
+buildah bud --arch amd64 --os linux --iidfile /tmp/iid-amd64 -f Dockerfile -t byjg/static-httpserver:$VERSION-amd64 .
 
-  buildah manifest push --all --format v2s2 byjg/static-httpserver:$VERSION docker://byjg/static-httpserver:$VERSION
-done
+buildah manifest add byjg/static-httpserver:$VERSION --arch arm64 --os linux --variant v8 $(cat /tmp/iid-arm64)
+buildah manifest add byjg/static-httpserver:$VERSION --arch amd64 --os linux --os=linux $(cat /tmp/iid-amd64)
+
+buildah manifest push --all --format v2s2 byjg/static-httpserver:$VERSION docker://byjg/static-httpserver:$VERSION
 

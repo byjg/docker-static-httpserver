@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +34,7 @@ type config struct {
 	tlsPort          string
 	tlsCertDir       string
 	spaMode          bool
+	showHeaders      bool
 	rootDir          string
 	cacheMaxSize     int64
 	cacheMaxFileSize int64
@@ -43,6 +46,7 @@ func loadConfig() config {
 		tlsPort:          getEnvOrDefault("TLS_PORT", "8443"),
 		tlsCertDir:       getEnvOrDefault("TLS_CERT_DIR", "/certs"),
 		spaMode:          parseBool(os.Getenv("SPA_MODE")),
+		showHeaders:      parseBool(os.Getenv("SHOW_HEADERS")),
 		rootDir:          "/static",
 		cacheMaxSize:     parseInt64(getEnvOrDefault("CACHE_MAX_SIZE", "50000000")),
 		cacheMaxFileSize: parseInt64(getEnvOrDefault("CACHE_MAX_FILE_SIZE", "5000000")),
@@ -135,24 +139,26 @@ func generateSelfSignedCert() (tls.Certificate, error) {
 // --- Template Variables ---
 
 type Variables struct {
-	HtmlTitle string
-	Title     string
-	Message   string
-	Image     string
-	Facebook  string
-	Twitter   string
-	Youtube   string
+	HtmlTitle   string
+	Title       string
+	Message     string
+	Image       string
+	Facebook    string
+	Twitter     string
+	Youtube     string
+	ShowHeaders bool
 }
 
-func loadVariables() Variables {
+func loadVariables(cfg config) Variables {
 	return Variables{
-		HtmlTitle: getEnvOrDefault("HTML_TITLE", "Coming soon"),
-		Title:     getEnvOrDefault("TITLE", "soon"),
-		Message:   getEnvOrDefault("MESSAGE", "Our website is <span class=\"m1-txt2\">Coming Soon</span>, follow us for update now!"),
-		Image:     os.Getenv("BG_IMAGE"),
-		Facebook:  os.Getenv("FACEBOOK"),
-		Twitter:   os.Getenv("TWITTER"),
-		Youtube:   os.Getenv("YOUTUBE"),
+		HtmlTitle:   getEnvOrDefault("HTML_TITLE", "Coming soon"),
+		Title:       getEnvOrDefault("TITLE", "soon"),
+		Message:     getEnvOrDefault("MESSAGE", "Our website is coming soon, follow us for updates!"),
+		Image:       os.Getenv("BG_IMAGE"),
+		Facebook:    os.Getenv("FACEBOOK"),
+		Twitter:     os.Getenv("TWITTER"),
+		Youtube:     os.Getenv("YOUTUBE"),
+		ShowHeaders: cfg.showHeaders,
 	}
 }
 
@@ -382,6 +388,23 @@ func serveStatic(cache *fileCache, cfg config) http.HandlerFunc {
 			return
 		}
 
+		// Headers API endpoint
+		if r.URL.Path == "/api/headers" && cfg.showHeaders {
+			headers := make(map[string]string)
+			keys := make([]string, 0, len(r.Header))
+			for k := range r.Header {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				headers[k] = strings.Join(r.Header[k], ", ")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(headers)
+			return
+		}
+
 		// Try to serve the requested file
 		entry, err := cache.get(r.URL.Path)
 		if err == nil {
@@ -414,7 +437,7 @@ func main() {
 	cfg := loadConfig()
 	cache := newFileCache(cfg)
 
-	vars := loadVariables()
+	vars := loadVariables(cfg)
 	if err := cache.seedIndex(vars); err != nil {
 		log.Fatalf("Failed to process index template: %v", err)
 	}

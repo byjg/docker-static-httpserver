@@ -46,6 +46,7 @@ parameters:
   twitter: ""
   youtube: ""
   spaMode: ""
+  showHeaders: ""
   port: ""
   tlsPort: ""
   tlsCertDir: ""

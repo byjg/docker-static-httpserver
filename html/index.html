@@ -4,84 +4,189 @@
     <title>{{ .HtmlTitle }}</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-<!--===============================================================================================-->    
-    <link rel="icon" type="image/png" href="images/icons/favicon.ico"/>
-<!--===============================================================================================-->
-    <link rel="stylesheet" type="text/css" href="vendor/bootstrap/css/bootstrap.min.css">
-<!--===============================================================================================-->
-    <link rel="stylesheet" type="text/css" href="fonts/font-awesome-4.7.0/css/font-awesome.min.css">
-<!--===============================================================================================-->
-    <link rel="stylesheet" type="text/css" href="vendor/animate/animate.css">
-<!--===============================================================================================-->
-    <link rel="stylesheet" type="text/css" href="vendor/select2/select2.min.css">
-<!--===============================================================================================-->
-    <link rel="stylesheet" type="text/css" href="css/util.css">
-    <link rel="stylesheet" type="text/css" href="css/main.css">
-<!--===============================================================================================-->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⏳</text></svg>">
+    <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #0f172a;
+            color: #e2e8f0;
+            overflow-x: hidden;
+        }
+
+        .bg-image {
+            position: fixed;
+            inset: 0;
+            background-size: cover;
+            background-position: center;
+            opacity: 0.3;
+            z-index: 0;
+        }
+
+        .container {
+            position: relative;
+            z-index: 1;
+            text-align: center;
+            padding: 2rem;
+            max-width: 640px;
+            width: 100%;
+            animation: fadeIn 0.8s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .dot {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #22c55e;
+            margin-bottom: 2rem;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34,197,94,0.5); }
+            50% { opacity: 0.8; box-shadow: 0 0 0 12px rgba(34,197,94,0); }
+        }
+
+        h1 {
+            font-size: clamp(2.5rem, 6vw, 4rem);
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            line-height: 1.1;
+            margin-bottom: 1.5rem;
+            color: #fff;
+        }
+
+        h1 span { color: #22c55e; }
+
+        .message {
+            font-size: 1.125rem;
+            line-height: 1.7;
+            color: #94a3b8;
+            margin-bottom: 2.5rem;
+        }
+
+        .social {
+            display: flex;
+            gap: 0.75rem;
+            justify-content: center;
+            margin-bottom: 2.5rem;
+        }
+
+        .social a {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.08);
+            color: #e2e8f0;
+            text-decoration: none;
+            transition: background 0.2s, transform 0.2s;
+        }
+
+        .social a:hover {
+            background: #22c55e;
+            color: #fff;
+            transform: scale(1.1);
+        }
+
+        .social svg { width: 20px; height: 20px; fill: currentColor; }
+
+        .headers-section {
+            margin-top: 2rem;
+            text-align: left;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 8px;
+            padding: 1.25rem;
+            animation: fadeIn 1s ease-out 0.3s both;
+        }
+
+        .headers-section h2 {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: #64748b;
+            margin-bottom: 0.75rem;
+        }
+
+        .headers-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8rem;
+            font-family: 'SF Mono', SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+        }
+
+        .headers-table tr { border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .headers-table tr:last-child { border-bottom: none; }
+        .headers-table td { padding: 0.4rem 0; vertical-align: top; }
+        .headers-table td:first-child { color: #22c55e; white-space: nowrap; padding-right: 1rem; font-weight: 500; }
+        .headers-table td:last-child { color: #94a3b8; word-break: break-all; }
+    </style>
 </head>
 <body>
-    
-    
-    <div class="size1 bg0 where1-parent">
-        <!-- Coutdown -->
-        <div class="flex-c-m bg-img1 size2 where1 overlay1 where2 respon2" style="{{ if .Image }}background-image: url('{{ .Image }}');{{ end }}">
+    {{ if .Image }}<div class="bg-image" style="background-image: url('{{ .Image }}');"></div>{{ end }}
+
+    <div class="container">
+        <div class="dot"></div>
+
+        <h1>{{ .Title }}<span>.</span></h1>
+
+        <p class="message">{{ .Message }}</p>
+
+        <div class="social">
+            {{ if .Facebook }}
+            <a href="{{ .Facebook }}" aria-label="Facebook">
+                <svg viewBox="0 0 24 24"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
+            </a>
+            {{ end }}
+            {{ if .Twitter }}
+            <a href="{{ .Twitter }}" aria-label="Twitter">
+                <svg viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+            </a>
+            {{ end }}
+            {{ if .Youtube }}
+            <a href="{{ .Youtube }}" aria-label="YouTube">
+                <svg viewBox="0 0 24 24"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+            </a>
+            {{ end }}
         </div>
-        
-        <!-- Form -->
-        <div class="size3 flex-col-sb flex-w p-l-75 p-r-75 p-t-45 p-b-45 respon1">
-            <div class="m1-txt3">
-                {{ .Title }}<span class="m1-txt3-green">.</span>
-            </div>
 
-            <div class="p-t-50 p-b-60">
-                <p class="m1-txt1 p-b-36">
-                    {{ .Message }}
-                </p>
-
-            </div>
-
-            <div class="flex-w">
-                {{ if .Facebook }}
-                <a href="{{ .Facebook }}" class="flex-c-m size5 bg3 how1 trans-04 m-r-5">
-                    <i class="fa fa-facebook"></i>
-                </a>
-                {{ end }}
-
-                {{ if .Twitter }}
-                <a href="{{ .Twitter }}" class="flex-c-m size5 bg4 how1 trans-04 m-r-5">
-                    <i class="fa fa-twitter"></i>
-                </a>
-                {{ end }}
-
-                {{ if .Youtube }}
-                <a href="{{ .Youtube }}" class="flex-c-m size5 bg5 how1 trans-04 m-r-5">
-                    <i class="fa fa-youtube-play"></i>
-                </a>
-                {{ end }}
-            </div>
+        {{ if .ShowHeaders }}
+        <div class="headers-section" id="headers-section">
+            <h2>Request Headers</h2>
+            <table class="headers-table" id="headers-table">
+                <tr><td colspan="2" style="color:#64748b">Loading...</td></tr>
+            </table>
         </div>
+        <script>
+            fetch('/api/headers')
+                .then(function(r) { return r.json(); })
+                .then(function(headers) {
+                    var table = document.getElementById('headers-table');
+                    var rows = '';
+                    Object.keys(headers).sort().forEach(function(key) {
+                        rows += '<tr><td>' + key + '</td><td>' + headers[key].replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td></tr>';
+                    });
+                    table.innerHTML = rows || '<tr><td colspan="2">No headers</td></tr>';
+                })
+                .catch(function() {
+                    document.getElementById('headers-table').innerHTML = '<tr><td colspan="2" style="color:#ef4444">Failed to load headers</td></tr>';
+                });
+        </script>
+        {{ end }}
     </div>
-
-
-
-    
-
-<!--===============================================================================================-->    
-    <script src="vendor/jquery/jquery-3.2.1.min.js"></script>
-<!--===============================================================================================-->
-    <script src="vendor/bootstrap/js/popper.js"></script>
-    <script src="vendor/bootstrap/js/bootstrap.min.js"></script>
-<!--===============================================================================================-->
-    <script src="vendor/select2/select2.min.js"></script>
-<!--===============================================================================================-->
-    <script src="vendor/tilt/tilt.jquery.min.js"></script>
-    <script >
-        $('.js-tilt').tilt({
-            scale: 1.1
-        })
-    </script>
-<!--===============================================================================================-->
-    <script src="js/main.js"></script>
-
 </body>
 </html>

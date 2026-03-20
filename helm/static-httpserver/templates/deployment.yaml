@@ -82,6 +82,10 @@ spec:
             - name: SPA_MODE
               value: {{ .Values.parameters.spaMode | quote }}
             {{- end }}
+            {{- if .Values.parameters.showHeaders }}
+            - name: SHOW_HEADERS
+              value: {{ .Values.parameters.showHeaders | quote }}
+            {{- end }}
             {{- if .Values.parameters.port }}
             - name: PORT
               value: {{ .Values.parameters.port | quote }}

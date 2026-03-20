@@ -17,16 +17,10 @@ A really minimal HTTP/HTTPS Server image for static files written in Go.
 * Health check endpoint for Kubernetes probes
 * Really small footprint
 
-## Tags
+## How to use the "Parking page"?
 
-* latest - The latest image with a coming soon template
-* tiny - A really minimalist image. You need to replace the volume ot build your own on top of this one.  
-
-## How to use the "Coming soon template"?
-
-![Coming soon page](https://raw.github.com/byjg/docker-static-httpserver/master/preview.png)
-
-The image has the coming soon template and can be customized by setting the environment variables:
+The image includes a self-contained parking page (single HTML file, no external dependencies) that can be
+customized by setting the environment variables:
 
 * `HTML_TITLE` - Page title (default: "Coming soon")
 * `TITLE` - Main heading (default: "soon")
@@ -52,6 +46,7 @@ docker run -p 8080:8080 -e TITLE=soon -e "MESSAGE=Keep In Touch" byjg/static-htt
 | `TLS_PORT` | `8443` | HTTPS listening port |
 | `TLS_CERT_DIR` | `/certs` | Directory to look for `cert.pem` and `key.pem` |
 | `SPA_MODE` | `false` | Enable SPA routing (`true`, `1`, or `yes` to enable) |
+| `SHOW_HEADERS` | `false` | Display received HTTP request headers on the parking page |
 | `CACHE_MAX_SIZE` | `50000000` | Max total cache size in bytes (0 to disable caching) |
 | `CACHE_MAX_FILE_SIZE` | `5000000` | Max individual file size to cache in bytes |
 
@@ -115,6 +110,7 @@ parameters:
   twitter: ""
   youtube: ""
   spaMode: ""
+  showHeaders: ""
   port: ""
   tlsPort: ""
   tlsCertDir: ""
@@ -150,17 +146,16 @@ Follow this discussion: [https://discuss.kubernetes.io/t/addon-parking/23186](ht
 
 ## Use your own static pages
 
-```
-docker run -p 8080:8080 -v /path/to/local/html:/static byjg/static-httpserver:tiny
-```
+Mount your own HTML directory to replace the default parking page:
 
+```bash
+docker run -p 8080:8080 -v /path/to/local/html:/static byjg/static-httpserver
+```
 
 ## Create your own image
 
-Dockerfile
-
-```
-FROM byjg/static-httpserver:tiny
+```dockerfile
+FROM byjg/static-httpserver
 
 COPY /path/to/html /static
 ```
