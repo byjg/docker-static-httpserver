@@ -83,12 +83,12 @@ func loadConfig() config {
 		fVersion      bool
 	)
 
-	flag.StringVar(&fPort, "port", "", "HTTP listening port (env: PORT, default: 8080)")
+	flag.StringVar(&fPort, "port", "", "HTTP listening port (env: PORT, disabled if not set)")
 	flag.StringVar(&fTlsPort, "tls-port", "", "HTTPS listening port (env: TLS_PORT, default: 8443)")
 	flag.StringVar(&fTlsCertDir, "tls-cert-dir", "", "TLS certificate directory (env: TLS_CERT_DIR, default: /certs)")
 	flag.BoolVar(&fSpa, "spa", false, "Enable SPA mode (env: SPA_MODE)")
 	flag.BoolVar(&fShowHeaders, "show-headers", false, "Show request headers on parking page (env: SHOW_HEADERS)")
-	flag.StringVar(&fRootDir, "root-dir", "", "Root directory for static files (env: ROOT_DIR, default: /static)")
+	flag.StringVar(&fRootDir, "root-dir", "", "Root directory for static files (env: ROOT_DIR, required)")
 	flag.Int64Var(&fCacheMax, "cache-max-size", -1, "Max cache size in bytes, 0 to disable (env: CACHE_MAX_SIZE, default: 50000000)")
 	flag.Int64Var(&fCacheMaxFile, "cache-max-file", -1, "Max file size to cache in bytes (env: CACHE_MAX_FILE_SIZE, default: 5000000)")
 	flag.BoolVar(&fVersion, "version", false, "Print version and exit")
@@ -99,13 +99,20 @@ func loadConfig() config {
 		os.Exit(0)
 	}
 
+	rootDir := flagOrEnvStr(fRootDir, "ROOT_DIR", "")
+	if rootDir == "" {
+		fmt.Fprintln(os.Stderr, "Error: --root-dir flag or ROOT_DIR environment variable is required")
+		flag.Usage()
+		os.Exit(1)
+	}
+
 	return config{
-		port:             flagOrEnvStr(fPort, "PORT", "8080"),
+		port:             flagOrEnvStr(fPort, "PORT", ""),
 		tlsPort:          flagOrEnvStr(fTlsPort, "TLS_PORT", "8443"),
 		tlsCertDir:       flagOrEnvStr(fTlsCertDir, "TLS_CERT_DIR", "/certs"),
 		spaMode:          flagOrEnvBool(fSpa, "SPA_MODE"),
 		showHeaders:      flagOrEnvBool(fShowHeaders, "SHOW_HEADERS"),
-		rootDir:          flagOrEnvStr(fRootDir, "ROOT_DIR", "/static"),
+		rootDir:          rootDir,
 		cacheMaxSize:     flagOrEnvInt64(fCacheMax, "CACHE_MAX_SIZE", 50000000),
 		cacheMaxFileSize: flagOrEnvInt64(fCacheMaxFile, "CACHE_MAX_FILE_SIZE", 5000000),
 	}
@@ -497,21 +504,25 @@ func main() {
 		log.Printf("Cache max size: %d bytes, max file size: %d bytes", cache.maxSize, cache.maxFileSize)
 	}
 
-	httpSrv := &http.Server{
-		Addr:         ":" + cfg.port,
-		Handler:      handler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+	// Start HTTP server (only if port is configured)
+	if cfg.port != "" {
+		httpSrv := &http.Server{
+			Addr:         ":" + cfg.port,
+			Handler:      handler,
+			ReadTimeout:  15 * time.Second,
+			WriteTimeout: 15 * time.Second,
+			IdleTimeout:  60 * time.Second,
+		}
+
+		go func() {
+			log.Printf("HTTP listening on %s", cfg.port)
+			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("HTTP server error: %v", err)
+			}
+		}()
 	}
 
-	go func() {
-		log.Printf("HTTP listening on %s", cfg.port)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server error: %v", err)
-		}
-	}()
-
+	// Start HTTPS server
 	cert, err := loadOrGenerateTLS(cfg.tlsCertDir)
 	if err != nil {
 		log.Fatalf("TLS setup failed: %v", err)

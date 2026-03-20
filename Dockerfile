@@ -11,5 +11,6 @@ WORKDIR /app
 COPY --chown=appuser:appuser html /static
 COPY --from=builder --chown=appuser:appuser /app/bin/static-httpserver .
 USER appuser
+ENV ROOT_DIR=/static PORT=8080
 CMD ["./static-httpserver"]
 

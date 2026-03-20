@@ -36,38 +36,69 @@ e.g.
 docker run -p 8080:8080 -e TITLE=soon -e "MESSAGE=Keep In Touch" byjg/static-httpserver
 ```
 
-## Environment Variables
+## Configuration
 
-### Server
+The server can be configured via CLI flags or environment variables. CLI flags take precedence over environment variables.
 
-| Variable | Default | Description |
-|---|---|---|
-| `PORT` | `8080` | HTTP listening port |
-| `TLS_PORT` | `8443` | HTTPS listening port |
-| `TLS_CERT_DIR` | `/certs` | Directory to look for `cert.pem` and `key.pem` |
-| `SPA_MODE` | `false` | Enable SPA routing (`true`, `1`, or `yes` to enable) |
-| `SHOW_HEADERS` | `false` | Display received HTTP request headers on the parking page |
-| `CACHE_MAX_SIZE` | `50000000` | Max total cache size in bytes (0 to disable caching) |
-| `CACHE_MAX_FILE_SIZE` | `5000000` | Max individual file size to cache in bytes |
+| CLI Flag | Env Variable | Default | Description |
+|---|---|---|---|
+| `--root-dir` | `ROOT_DIR` | *(required)* | Root directory for static files |
+| `--port` | `PORT` | *(disabled)* | HTTP listening port. Not set = HTTP disabled |
+| `--tls-port` | `TLS_PORT` | `8443` | HTTPS listening port |
+| `--tls-cert-dir` | `TLS_CERT_DIR` | `/certs` | Directory to look for `cert.pem` and `key.pem` |
+| `--spa` | `SPA_MODE` | `false` | Enable SPA routing |
+| `--show-headers` | `SHOW_HEADERS` | `false` | Display request headers on the parking page |
+| `--cache-max-size` | `CACHE_MAX_SIZE` | `50000000` | Max total cache size in bytes (0 to disable) |
+| `--cache-max-file` | `CACHE_MAX_FILE_SIZE` | `5000000` | Max individual file size to cache in bytes |
+| `--version` | | | Print version and exit |
+
+The Docker image sets `--root-dir /static` and `--port 8080` by default.
+
+### CLI Usage
+
+```bash
+# Serve current directory on HTTPS only (port 8443)
+static-httpserver --root-dir .
+
+# Serve with both HTTP and HTTPS
+static-httpserver --root-dir /var/www/html --port 8080
+
+# SPA mode
+static-httpserver --root-dir ./dist --port 3000 --spa
+```
+
+### Install via deb/rpm
+
+```bash
+# Debian/Ubuntu
+apt install static-httpserver
+
+# RHEL/CentOS
+yum install static-httpserver
+```
 
 ### HTTPS / TLS
 
-The server always starts both HTTP and HTTPS listeners. By default, a **self-signed certificate** is
-generated in memory at startup.
+HTTPS is always enabled (default port 8443). By default, a **self-signed certificate** is generated
+in memory at startup.
 
-To use your own certificates, mount them into the container:
+To use your own certificates, provide a directory with `cert.pem` and `key.pem`:
 
 ```bash
+# CLI
+static-httpserver --root-dir ./html --tls-cert-dir /path/to/certs
+
+# Docker
 docker run -p 8080:8080 -p 8443:8443 \
     -v /path/to/certs:/certs:ro \
     byjg/static-httpserver
 ```
 
-The directory must contain `cert.pem` and `key.pem` files.
+HTTP is **optional** — only started when `--port` or `PORT` is set.
 
 ### SPA Mode
 
-When `SPA_MODE` is enabled, any request that doesn't match an existing file **and** has no file extension
+When enabled, any request that doesn't match an existing file **and** has no file extension
 is served the `index.html` page. This supports client-side routing in frameworks like React, Angular, and Vue.
 
 Requests for missing static assets (e.g., `/missing.css`) still return 404.
@@ -111,6 +142,7 @@ parameters:
   youtube: ""
   spaMode: ""
   showHeaders: ""
+  rootDir: ""
   port: ""
   tlsPort: ""
   tlsCertDir: ""
