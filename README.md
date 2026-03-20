@@ -160,5 +160,35 @@ FROM byjg/static-httpserver
 COPY /path/to/html /static
 ```
 
+## Using with React / Vue / Angular (SPA)
+
+Use a multi-stage Dockerfile to build your frontend app and serve it with SPA routing:
+
+```dockerfile
+FROM node:22-alpine AS builder
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM byjg/static-httpserver
+ENV SPA_MODE=true
+COPY --from=builder /app/build /static
+```
+
+Note: adjust the build output folder depending on your framework:
+- **React (CRA)**: `build`
+- **Vite**: `dist`
+- **Next.js (static export)**: `out`
+- **Angular**: `dist/<project-name>/browser`
+
+Then build and run:
+
+```bash
+docker build -t myapp .
+docker run -p 8080:8080 myapp
+```
+
 ----
 [Open source ByJG](http://opensource.byjg.com)
