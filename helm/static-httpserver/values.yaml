@@ -48,6 +48,8 @@ parameters:
   youtube: ""
   spaMode: ""
   port: ""
+  tlsPort: ""
+  tlsCertDir: ""
   cacheMaxSize: ""
   cacheMaxFileSize: ""
 

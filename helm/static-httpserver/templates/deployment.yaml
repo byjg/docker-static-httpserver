@@ -36,6 +36,9 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+            - name: https
+              containerPort: 8443
+              protocol: TCP
           livenessProbe:
             httpGet:
               path: /health
@@ -82,6 +85,14 @@ spec:
             {{- if .Values.parameters.port }}
             - name: PORT
               value: {{ .Values.parameters.port | quote }}
+            {{- end }}
+            {{- if .Values.parameters.tlsPort }}
+            - name: TLS_PORT
+              value: {{ .Values.parameters.tlsPort | quote }}
+            {{- end }}
+            {{- if .Values.parameters.tlsCertDir }}
+            - name: TLS_CERT_DIR
+              value: {{ .Values.parameters.tlsCertDir | quote }}
             {{- end }}
             {{- if .Values.parameters.cacheMaxSize }}
             - name: CACHE_MAX_SIZE

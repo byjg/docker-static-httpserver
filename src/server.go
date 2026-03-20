@@ -3,9 +3,17 @@ package main
 import (
 	"bytes"
 	"container/list"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"mime"
 	"net/http"
 	"os"
@@ -21,6 +29,8 @@ import (
 
 type config struct {
 	port             string
+	tlsPort          string
+	tlsCertDir       string
 	spaMode          bool
 	rootDir          string
 	cacheMaxSize     int64
@@ -30,6 +40,8 @@ type config struct {
 func loadConfig() config {
 	return config{
 		port:             getEnvOrDefault("PORT", "8080"),
+		tlsPort:          getEnvOrDefault("TLS_PORT", "8443"),
+		tlsCertDir:       getEnvOrDefault("TLS_CERT_DIR", "/certs"),
 		spaMode:          parseBool(os.Getenv("SPA_MODE")),
 		rootDir:          "/static",
 		cacheMaxSize:     parseInt64(getEnvOrDefault("CACHE_MAX_SIZE", "50000000")),
@@ -55,6 +67,69 @@ func parseInt64(s string) int64 {
 		return 0
 	}
 	return v
+}
+
+// --- TLS ---
+
+func loadOrGenerateTLS(certDir string) (tls.Certificate, error) {
+	certFile := filepath.Join(certDir, "cert.pem")
+	keyFile := filepath.Join(certDir, "key.pem")
+
+	// Try loading custom certificates
+	if _, err := os.Stat(certFile); err == nil {
+		if _, err := os.Stat(keyFile); err == nil {
+			cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+			if err != nil {
+				return tls.Certificate{}, fmt.Errorf("loading certificates from %s: %w", certDir, err)
+			}
+			log.Printf("TLS using certificates from %s", certDir)
+			return cert, nil
+		}
+	}
+
+	// Generate self-signed certificate
+	log.Printf("TLS using self-signed certificate")
+	return generateSelfSignedCert()
+}
+
+func generateSelfSignedCert() (tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("generating private key: %w", err)
+	}
+
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("generating serial number: %w", err)
+	}
+
+	tmpl := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			Organization: []string{"Static HTTP Server"},
+			CommonName:   "localhost",
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("creating certificate: %w", err)
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("marshaling private key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	return tls.X509KeyPair(certPEM, keyPEM)
 }
 
 // --- Template Variables ---
@@ -198,12 +273,9 @@ func (fc *fileCache) get(urlPath string) (*cacheEntry, error) {
 		}
 		victim := back.Value.(*cacheEntry)
 		if victim.pinned {
-			// Move pinned entry before the back so we can try the next one
-			// If only pinned entries remain, stop evicting
 			if fc.lruList.Len() <= 1 {
 				break
 			}
-			// Find next non-pinned from back
 			evicted := false
 			for e := fc.lruList.Back(); e != nil; e = e.Prev() {
 				v := e.Value.(*cacheEntry)
@@ -216,7 +288,7 @@ func (fc *fileCache) get(urlPath string) (*cacheEntry, error) {
 				}
 			}
 			if !evicted {
-				break // only pinned entries left
+				break
 			}
 			continue
 		}
@@ -347,10 +419,9 @@ func main() {
 		log.Fatalf("Failed to process index template: %v", err)
 	}
 
-	http.HandleFunc("/", wrapHandler(serveStatic(cache, cfg)))
+	handler := wrapHandler(serveStatic(cache, cfg))
 
 	log.Printf("byjg/static-httpserver")
-	log.Printf("Listen on %s", cfg.port)
 	if cfg.spaMode {
 		log.Printf("SPA mode enabled")
 	}
@@ -360,11 +431,40 @@ func main() {
 		log.Printf("Cache max size: %d bytes, max file size: %d bytes", cache.maxSize, cache.maxFileSize)
 	}
 
-	srv := &http.Server{
+	// Start HTTP server
+	httpSrv := &http.Server{
 		Addr:         ":" + cfg.port,
+		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-	log.Fatal(srv.ListenAndServe())
+
+	go func() {
+		log.Printf("HTTP listening on %s", cfg.port)
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server error: %v", err)
+		}
+	}()
+
+	// Start HTTPS server
+	cert, err := loadOrGenerateTLS(cfg.tlsCertDir)
+	if err != nil {
+		log.Fatalf("TLS setup failed: %v", err)
+	}
+
+	tlsSrv := &http.Server{
+		Addr:    ":" + cfg.tlsPort,
+		Handler: handler,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		},
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	log.Printf("HTTPS listening on %s", cfg.tlsPort)
+	log.Fatal(tlsSrv.ListenAndServeTLS("", ""))
 }
