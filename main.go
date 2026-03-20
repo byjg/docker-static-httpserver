@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"math/big"
@@ -27,6 +28,8 @@ import (
 	"time"
 )
 
+var version = "dev"
+
 // --- Configuration ---
 
 type config struct {
@@ -40,24 +43,72 @@ type config struct {
 	cacheMaxFileSize int64
 }
 
-func loadConfig() config {
-	return config{
-		port:             getEnvOrDefault("PORT", "8080"),
-		tlsPort:          getEnvOrDefault("TLS_PORT", "8443"),
-		tlsCertDir:       getEnvOrDefault("TLS_CERT_DIR", "/certs"),
-		spaMode:          parseBool(os.Getenv("SPA_MODE")),
-		showHeaders:      parseBool(os.Getenv("SHOW_HEADERS")),
-		rootDir:          "/static",
-		cacheMaxSize:     parseInt64(getEnvOrDefault("CACHE_MAX_SIZE", "50000000")),
-		cacheMaxFileSize: parseInt64(getEnvOrDefault("CACHE_MAX_FILE_SIZE", "5000000")),
+func flagOrEnvStr(flagVal string, envName string, def string) string {
+	if flagVal != "" {
+		return flagVal
 	}
-}
-
-func getEnvOrDefault(env string, def string) string {
-	if v := os.Getenv(env); v != "" {
+	if v := os.Getenv(envName); v != "" {
 		return v
 	}
 	return def
+}
+
+func flagOrEnvBool(flagVal bool, envName string) bool {
+	if flagVal {
+		return true
+	}
+	return parseBool(os.Getenv(envName))
+}
+
+func flagOrEnvInt64(flagVal int64, envName string, def int64) int64 {
+	if flagVal >= 0 {
+		return flagVal
+	}
+	if v := os.Getenv(envName); v != "" {
+		return parseInt64(v)
+	}
+	return def
+}
+
+func loadConfig() config {
+	var (
+		fPort         string
+		fTlsPort      string
+		fTlsCertDir   string
+		fSpa          bool
+		fShowHeaders  bool
+		fRootDir      string
+		fCacheMax     int64
+		fCacheMaxFile int64
+		fVersion      bool
+	)
+
+	flag.StringVar(&fPort, "port", "", "HTTP listening port (env: PORT, default: 8080)")
+	flag.StringVar(&fTlsPort, "tls-port", "", "HTTPS listening port (env: TLS_PORT, default: 8443)")
+	flag.StringVar(&fTlsCertDir, "tls-cert-dir", "", "TLS certificate directory (env: TLS_CERT_DIR, default: /certs)")
+	flag.BoolVar(&fSpa, "spa", false, "Enable SPA mode (env: SPA_MODE)")
+	flag.BoolVar(&fShowHeaders, "show-headers", false, "Show request headers on parking page (env: SHOW_HEADERS)")
+	flag.StringVar(&fRootDir, "root-dir", "", "Root directory for static files (env: ROOT_DIR, default: /static)")
+	flag.Int64Var(&fCacheMax, "cache-max-size", -1, "Max cache size in bytes, 0 to disable (env: CACHE_MAX_SIZE, default: 50000000)")
+	flag.Int64Var(&fCacheMaxFile, "cache-max-file", -1, "Max file size to cache in bytes (env: CACHE_MAX_FILE_SIZE, default: 5000000)")
+	flag.BoolVar(&fVersion, "version", false, "Print version and exit")
+	flag.Parse()
+
+	if fVersion {
+		fmt.Printf("static-httpserver %s\n", version)
+		os.Exit(0)
+	}
+
+	return config{
+		port:             flagOrEnvStr(fPort, "PORT", "8080"),
+		tlsPort:          flagOrEnvStr(fTlsPort, "TLS_PORT", "8443"),
+		tlsCertDir:       flagOrEnvStr(fTlsCertDir, "TLS_CERT_DIR", "/certs"),
+		spaMode:          flagOrEnvBool(fSpa, "SPA_MODE"),
+		showHeaders:      flagOrEnvBool(fShowHeaders, "SHOW_HEADERS"),
+		rootDir:          flagOrEnvStr(fRootDir, "ROOT_DIR", "/static"),
+		cacheMaxSize:     flagOrEnvInt64(fCacheMax, "CACHE_MAX_SIZE", 50000000),
+		cacheMaxFileSize: flagOrEnvInt64(fCacheMaxFile, "CACHE_MAX_FILE_SIZE", 5000000),
+	}
 }
 
 func parseBool(s string) bool {
@@ -79,7 +130,6 @@ func loadOrGenerateTLS(certDir string) (tls.Certificate, error) {
 	certFile := filepath.Join(certDir, "cert.pem")
 	keyFile := filepath.Join(certDir, "key.pem")
 
-	// Try loading custom certificates
 	if _, err := os.Stat(certFile); err == nil {
 		if _, err := os.Stat(keyFile); err == nil {
 			cert, err := tls.LoadX509KeyPair(certFile, keyFile)
@@ -91,7 +141,6 @@ func loadOrGenerateTLS(certDir string) (tls.Certificate, error) {
 		}
 	}
 
-	// Generate self-signed certificate
 	log.Printf("TLS using self-signed certificate")
 	return generateSelfSignedCert()
 }
@@ -162,6 +211,13 @@ func loadVariables(cfg config) Variables {
 	}
 }
 
+func getEnvOrDefault(env string, def string) string {
+	if v := os.Getenv(env); v != "" {
+		return v
+	}
+	return def
+}
+
 // --- LRU File Cache ---
 
 var errNotFound = errors.New("file not found")
@@ -199,7 +255,7 @@ func (fc *fileCache) seedIndex(vars Variables) error {
 	index := filepath.Join(fc.rootDir, "index.html")
 
 	if _, err := os.Stat(index); err != nil {
-		return nil // index.html doesn't exist, not an error
+		return nil
 	}
 
 	content, err := os.ReadFile(index)
@@ -229,7 +285,7 @@ func (fc *fileCache) seedIndex(vars Variables) error {
 
 	elem := fc.lruList.PushFront(entry)
 	fc.entries["/index.html"] = elem
-	fc.entries["/"] = elem // "/" resolves to index.html
+	fc.entries["/"] = elem
 	fc.currentSize += int64(len(entry.content))
 
 	return nil
@@ -238,7 +294,6 @@ func (fc *fileCache) seedIndex(vars Variables) error {
 func (fc *fileCache) get(urlPath string) (*cacheEntry, error) {
 	fc.mu.Lock()
 
-	// Check cache
 	if elem, ok := fc.entries[urlPath]; ok {
 		fc.lruList.MoveToFront(elem)
 		entry := elem.Value.(*cacheEntry)
@@ -248,22 +303,18 @@ func (fc *fileCache) get(urlPath string) (*cacheEntry, error) {
 
 	fc.mu.Unlock()
 
-	// Resolve filesystem path
 	entry, err := fc.readFromDisk(urlPath)
 	if err != nil {
 		return nil, err
 	}
 
-	// Skip caching if disabled or file too large
 	if fc.disabled || int64(len(entry.content)) > fc.maxFileSize {
 		return entry, nil
 	}
 
-	// Insert into cache with eviction
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
 
-	// Double-check: another goroutine may have cached it
 	if elem, ok := fc.entries[urlPath]; ok {
 		fc.lruList.MoveToFront(elem)
 		return elem.Value.(*cacheEntry), nil
@@ -271,7 +322,6 @@ func (fc *fileCache) get(urlPath string) (*cacheEntry, error) {
 
 	entrySize := int64(len(entry.content))
 
-	// Evict LRU entries until there's room
 	for fc.currentSize+entrySize > fc.maxSize && fc.lruList.Len() > 0 {
 		back := fc.lruList.Back()
 		if back == nil {
@@ -303,7 +353,6 @@ func (fc *fileCache) get(urlPath string) (*cacheEntry, error) {
 		fc.lruList.Remove(back)
 	}
 
-	// If still no room, serve without caching
 	if fc.currentSize+entrySize > fc.maxSize {
 		return entry, nil
 	}
@@ -319,7 +368,6 @@ func (fc *fileCache) readFromDisk(urlPath string) (*cacheEntry, error) {
 	clean := filepath.Clean(urlPath)
 	fsPath := filepath.Join(fc.rootDir, clean)
 
-	// Security: prevent directory traversal
 	absRoot, _ := filepath.Abs(fc.rootDir)
 	absPath, _ := filepath.Abs(fsPath)
 	if !strings.HasPrefix(absPath, absRoot+string(filepath.Separator)) && absPath != absRoot {
@@ -331,7 +379,6 @@ func (fc *fileCache) readFromDisk(urlPath string) (*cacheEntry, error) {
 		return nil, errNotFound
 	}
 
-	// If directory, try index.html inside it
 	if info.IsDir() {
 		fsPath = filepath.Join(fsPath, "index.html")
 		if _, err := os.Stat(fsPath); err != nil {
@@ -380,7 +427,6 @@ func wrapHandler(h http.HandlerFunc) http.HandlerFunc {
 
 func serveStatic(cache *fileCache, cfg config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Health endpoint
 		if r.URL.Path == "/health" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -388,7 +434,6 @@ func serveStatic(cache *fileCache, cfg config) http.HandlerFunc {
 			return
 		}
 
-		// Headers API endpoint
 		if r.URL.Path == "/api/headers" && cfg.showHeaders {
 			headers := make(map[string]string)
 			keys := make([]string, 0, len(r.Header))
@@ -405,7 +450,6 @@ func serveStatic(cache *fileCache, cfg config) http.HandlerFunc {
 			return
 		}
 
-		// Try to serve the requested file
 		entry, err := cache.get(r.URL.Path)
 		if err == nil {
 			w.Header().Set("Content-Type", entry.contentType)
@@ -415,7 +459,6 @@ func serveStatic(cache *fileCache, cfg config) http.HandlerFunc {
 			return
 		}
 
-		// SPA fallback: serve index.html for paths without file extension
 		if cfg.spaMode && filepath.Ext(r.URL.Path) == "" {
 			entry, err := cache.get("/index.html")
 			if err == nil {
@@ -444,7 +487,7 @@ func main() {
 
 	handler := wrapHandler(serveStatic(cache, cfg))
 
-	log.Printf("byjg/static-httpserver")
+	log.Printf("byjg/static-httpserver %s", version)
 	if cfg.spaMode {
 		log.Printf("SPA mode enabled")
 	}
@@ -454,7 +497,6 @@ func main() {
 		log.Printf("Cache max size: %d bytes, max file size: %d bytes", cache.maxSize, cache.maxFileSize)
 	}
 
-	// Start HTTP server
 	httpSrv := &http.Server{
 		Addr:         ":" + cfg.port,
 		Handler:      handler,
@@ -470,7 +512,6 @@ func main() {
 		}
 	}()
 
-	// Start HTTPS server
 	cert, err := loadOrGenerateTLS(cfg.tlsCertDir)
 	if err != nil {
 		log.Fatalf("TLS setup failed: %v", err)

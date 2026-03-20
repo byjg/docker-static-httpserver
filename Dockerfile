@@ -1,6 +1,6 @@
 FROM docker.io/golang:1.26 AS builder
 WORKDIR /app
-COPY src/ .
+COPY go.mod main.go ./
 RUN CGO_ENABLED=0 GOOS=linux go build -o server .
 
 FROM alpine:3.23

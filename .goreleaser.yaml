@@ -1,0 +1,51 @@
+version: 2
+
+builds:
+  - id: static-httpserver
+    main: .
+    binary: static-httpserver
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: static-httpserver-archive
+    name_template: "static-httpserver_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+
+nfpms:
+  - id: static-httpserver-pkg
+    package_name: static-httpserver
+    ids:
+      - static-httpserver
+    vendor: ByJG
+    homepage: https://github.com/byjg/docker-static-httpserver
+    maintainer: ByJG <opensource@byjg.com>
+    description: Minimal HTTP/HTTPS server for static files with SPA support
+    license: MIT
+    formats:
+      - deb
+      - rpm
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+release:
+  github:
+    owner: byjg
+    name: docker-static-httpserver
