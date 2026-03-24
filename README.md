@@ -40,17 +40,19 @@ docker run -p 8080:8080 -e TITLE=soon -e "MESSAGE=Keep In Touch" byjg/static-htt
 
 The server can be configured via CLI flags or environment variables. CLI flags take precedence over environment variables.
 
-| CLI Flag | Env Variable | Default | Description |
-|---|---|---|---|
-| `--root-dir` | `ROOT_DIR` | *(required)* | Root directory for static files |
-| `--port` | `PORT` | *(disabled)* | HTTP listening port. Not set = HTTP disabled |
-| `--tls-port` | `TLS_PORT` | `8443` | HTTPS listening port |
-| `--tls-cert-dir` | `TLS_CERT_DIR` | `/certs` | Directory to look for `cert.pem` and `key.pem` |
-| `--spa` | `SPA_MODE` | `false` | Enable SPA routing |
-| `--show-headers` | `SHOW_HEADERS` | `false` | Display request headers on the parking page |
-| `--cache-max-size` | `CACHE_MAX_SIZE` | `50000000` | Max total cache size in bytes (0 to disable) |
-| `--cache-max-file` | `CACHE_MAX_FILE_SIZE` | `5000000` | Max individual file size to cache in bytes |
-| `--version` | | | Print version and exit |
+| CLI Flag           | Env Variable          | Default      | Description                                                                   |
+|--------------------|-----------------------|--------------|-------------------------------------------------------------------------------|
+| `--root-dir`       | `ROOT_DIR`            | *(required)* | Root directory for static files                                               |
+| `--port`           | `PORT`                | *(disabled)* | HTTP listening port. Not set = HTTP disabled                                  |
+| `--tls-port`       | `TLS_PORT`            | `8443`       | HTTPS listening port                                                          |
+| `--tls-cert-dir`   | `TLS_CERT_DIR`        | `/certs`     | Directory to look for `cert.pem` and `key.pem`                                |
+| `--spa`            | `SPA_MODE`            | `false`      | Enable SPA routing                                                            |
+| `--show-headers`   | `SHOW_HEADERS`        | `false`      | Display request headers on the parking page                                   |
+| `--cache-max-size` | `CACHE_MAX_SIZE`      | `50000000`   | Max total cache size in bytes (0 to disable)                                  |
+| `--cache-max-file` | `CACHE_MAX_FILE_SIZE` | `5000000`    | Max individual file size to cache in bytes                                    |
+| `--proxy`          | `PROXY_ROUTES`        | *(none)*     | Proxy route as `/prefix=http://target` (repeatable flag, comma-separated env) |
+| `--proxy-timeout`  | `PROXY_TIMEOUT`       | `30`         | Proxy upstream response timeout in seconds                                    |
+| `--version`        |                       |              | Print version and exit                                                        |
 
 The Docker image sets `--root-dir /static` and `--port 8080` by default.
 
@@ -106,6 +108,30 @@ Requests for missing static assets (e.g., `/missing.css`) still return 404.
 ```bash
 docker run -p 8080:8080 -e SPA_MODE=true byjg/static-httpserver
 ```
+
+### Reverse Proxy
+
+The server can forward requests matching a path prefix to a backend service. This is useful for:
+- Avoiding CORS issues by serving the frontend and API from the same origin
+- Hiding backend services from direct client access
+- Replacing nginx/caddy as a reverse proxy sidecar in Kubernetes
+
+```bash
+# CLI — multiple routes
+static-httpserver --root-dir ./dist --spa \
+    --proxy /api=http://backend:3000 \
+    --proxy /auth=http://auth-service:4000
+
+# Docker — comma-separated env
+docker run -p 8080:8080 \
+    -e SPA_MODE=true \
+    -e PROXY_ROUTES="/api=http://backend:3000,/auth=http://auth:4000" \
+    byjg/static-httpserver
+```
+
+The proxy strips the prefix before forwarding: a request to `/api/users` is forwarded as `/users` to the target.
+
+The `--proxy-timeout` flag (default 30s) controls how long the server waits for a response from the upstream.
 
 ### Health Check
 

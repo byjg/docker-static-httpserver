@@ -18,6 +18,8 @@ import (
 	"math/big"
 	"mime"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,6 +34,11 @@ var version = "dev"
 
 // --- Configuration ---
 
+type proxyRoute struct {
+	prefix string
+	target *url.URL
+}
+
 type config struct {
 	port             string
 	tlsPort          string
@@ -41,6 +48,8 @@ type config struct {
 	rootDir          string
 	cacheMaxSize     int64
 	cacheMaxFileSize int64
+	proxyRoutes      []proxyRoute
+	proxyTimeout     time.Duration
 }
 
 func flagOrEnvStr(flagVal string, envName string, def string) string {
@@ -70,6 +79,41 @@ func flagOrEnvInt64(flagVal int64, envName string, def int64) int64 {
 	return def
 }
 
+func parseProxyRoutes(specs []string) ([]proxyRoute, error) {
+	var routes []proxyRoute
+	for _, spec := range specs {
+		spec = strings.TrimSpace(spec)
+		if spec == "" {
+			continue
+		}
+		parts := strings.SplitN(spec, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid proxy route %q: expected /prefix=http://target", spec)
+		}
+		prefix := strings.TrimRight(parts[0], "/")
+		if prefix == "" || prefix[0] != '/' {
+			return nil, fmt.Errorf("invalid proxy prefix %q: must start with /", parts[0])
+		}
+		target, err := url.Parse(parts[1])
+		if err != nil {
+			return nil, fmt.Errorf("invalid proxy target %q: %w", parts[1], err)
+		}
+		if target.Scheme != "http" && target.Scheme != "https" {
+			return nil, fmt.Errorf("invalid proxy target %q: scheme must be http or https", parts[1])
+		}
+		routes = append(routes, proxyRoute{prefix: prefix, target: target})
+	}
+	return routes, nil
+}
+
+type proxyFlags []string
+
+func (p *proxyFlags) String() string { return strings.Join(*p, ",") }
+func (p *proxyFlags) Set(val string) error {
+	*p = append(*p, val)
+	return nil
+}
+
 func loadConfig() config {
 	var (
 		fPort         string
@@ -81,6 +125,8 @@ func loadConfig() config {
 		fCacheMax     int64
 		fCacheMaxFile int64
 		fVersion      bool
+		fProxy        proxyFlags
+		fProxyTimeout int
 	)
 
 	flag.StringVar(&fPort, "port", "", "HTTP listening port (env: PORT, disabled if not set)")
@@ -92,6 +138,8 @@ func loadConfig() config {
 	flag.Int64Var(&fCacheMax, "cache-max-size", -1, "Max cache size in bytes, 0 to disable (env: CACHE_MAX_SIZE, default: 50000000)")
 	flag.Int64Var(&fCacheMaxFile, "cache-max-file", -1, "Max file size to cache in bytes (env: CACHE_MAX_FILE_SIZE, default: 5000000)")
 	flag.BoolVar(&fVersion, "version", false, "Print version and exit")
+	flag.Var(&fProxy, "proxy", "Proxy route as /prefix=http://target (repeatable, env: PROXY_ROUTES comma-separated)")
+	flag.IntVar(&fProxyTimeout, "proxy-timeout", 0, "Proxy upstream timeout in seconds (env: PROXY_TIMEOUT, default: 30)")
 	flag.Parse()
 
 	if fVersion {
@@ -106,6 +154,29 @@ func loadConfig() config {
 		os.Exit(1)
 	}
 
+	// Parse proxy routes from flags or env
+	var proxySpecs []string
+	if len(fProxy) > 0 {
+		proxySpecs = fProxy
+	} else if v := os.Getenv("PROXY_ROUTES"); v != "" {
+		proxySpecs = strings.Split(v, ",")
+	}
+
+	routes, err := parseProxyRoutes(proxySpecs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	timeout := 30
+	if fProxyTimeout > 0 {
+		timeout = fProxyTimeout
+	} else if v := os.Getenv("PROXY_TIMEOUT"); v != "" {
+		if t, err := strconv.Atoi(v); err == nil && t > 0 {
+			timeout = t
+		}
+	}
+
 	return config{
 		port:             flagOrEnvStr(fPort, "PORT", ""),
 		tlsPort:          flagOrEnvStr(fTlsPort, "TLS_PORT", "8443"),
@@ -115,6 +186,8 @@ func loadConfig() config {
 		rootDir:          rootDir,
 		cacheMaxSize:     flagOrEnvInt64(fCacheMax, "CACHE_MAX_SIZE", 50000000),
 		cacheMaxFileSize: flagOrEnvInt64(fCacheMaxFile, "CACHE_MAX_FILE_SIZE", 5000000),
+		proxyRoutes:      routes,
+		proxyTimeout:     time.Duration(timeout) * time.Second,
 	}
 }
 
@@ -410,6 +483,54 @@ func (fc *fileCache) readFromDisk(urlPath string) (*cacheEntry, error) {
 	}, nil
 }
 
+// --- Reverse Proxy ---
+
+type proxyHandler struct {
+	prefix string
+	proxy  *httputil.ReverseProxy
+}
+
+func buildProxyHandlers(routes []proxyRoute, timeout time.Duration) []proxyHandler {
+	if len(routes) == 0 {
+		return nil
+	}
+
+	transport := &http.Transport{
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: timeout,
+	}
+
+	handlers := make([]proxyHandler, len(routes))
+	for i, r := range routes {
+		target := r.target
+		prefix := r.prefix
+		handlers[i] = proxyHandler{
+			prefix: prefix,
+			proxy: &httputil.ReverseProxy{
+				Director: func(req *http.Request) {
+					req.URL.Scheme = target.Scheme
+					req.URL.Host = target.Host
+					req.Host = target.Host
+					req.URL.Path = strings.TrimPrefix(req.URL.Path, prefix)
+					if req.URL.Path == "" || req.URL.Path[0] != '/' {
+						req.URL.Path = "/" + req.URL.Path
+					}
+					if _, ok := req.Header["User-Agent"]; !ok {
+						req.Header.Set("User-Agent", "")
+					}
+				},
+				Transport: transport,
+				ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+					log.Printf("proxy error [%s]: %v", prefix, err)
+					http.Error(w, "Bad Gateway", http.StatusBadGateway)
+				},
+			},
+		}
+	}
+	return handlers
+}
+
 // --- HTTP Handlers ---
 
 type statusRespWr struct {
@@ -432,7 +553,7 @@ func wrapHandler(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func serveStatic(cache *fileCache, cfg config) http.HandlerFunc {
+func serveStatic(cache *fileCache, cfg config, proxies []proxyHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {
 			w.Header().Set("Content-Type", "application/json")
@@ -441,7 +562,7 @@ func serveStatic(cache *fileCache, cfg config) http.HandlerFunc {
 			return
 		}
 
-		if r.URL.Path == "/api/headers" && cfg.showHeaders {
+		if r.URL.Path == "/headers" && cfg.showHeaders {
 			headers := make(map[string]string)
 			keys := make([]string, 0, len(r.Header))
 			for k := range r.Header {
@@ -455,6 +576,14 @@ func serveStatic(cache *fileCache, cfg config) http.HandlerFunc {
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(headers)
 			return
+		}
+
+		// Check proxy routes
+		for _, p := range proxies {
+			if r.URL.Path == p.prefix || strings.HasPrefix(r.URL.Path, p.prefix+"/") {
+				p.proxy.ServeHTTP(w, r)
+				return
+			}
 		}
 
 		entry, err := cache.get(r.URL.Path)
@@ -492,7 +621,8 @@ func main() {
 		log.Fatalf("Failed to process index template: %v", err)
 	}
 
-	handler := wrapHandler(serveStatic(cache, cfg))
+	proxies := buildProxyHandlers(cfg.proxyRoutes, cfg.proxyTimeout)
+	handler := wrapHandler(serveStatic(cache, cfg, proxies))
 
 	log.Printf("byjg/static-httpserver %s", version)
 	if cfg.spaMode {
@@ -502,6 +632,9 @@ func main() {
 		log.Printf("Cache disabled")
 	} else {
 		log.Printf("Cache max size: %d bytes, max file size: %d bytes", cache.maxSize, cache.maxFileSize)
+	}
+	for _, r := range cfg.proxyRoutes {
+		log.Printf("Proxy: %s -> %s (timeout: %s)", r.prefix, r.target, cfg.proxyTimeout)
 	}
 
 	// Start HTTP server (only if port is configured)

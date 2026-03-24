@@ -172,7 +172,7 @@
             </table>
         </div>
         <script>
-            fetch('/api/headers')
+            fetch('/headers')
                 .then(function(r) { return r.json(); })
                 .then(function(headers) {
                     var table = document.getElementById('headers-table');
