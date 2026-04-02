@@ -52,6 +52,8 @@ The server can be configured via CLI flags or environment variables. CLI flags t
 | `--cache-max-file` | `CACHE_MAX_FILE_SIZE` | `5000000`    | Max individual file size to cache in bytes                                    |
 | `--proxy`          | `PROXY_ROUTES`        | *(none)*     | Proxy route as `/prefix=http://target` (repeatable flag, comma-separated env) |
 | `--proxy-timeout`  | `PROXY_TIMEOUT`       | `30`         | Proxy upstream response timeout in seconds                                    |
+| `--proxy-ca`       | `PROXY_CA_FILE`       | *(none)*     | CA certificate file (PEM) for verifying backend TLS — takes precedence over `--proxy-insecure` |
+| `--proxy-insecure` | `PROXY_INSECURE`      | `false`      | Skip TLS verification for proxy backends — use only on trusted networks       |
 | `--version`        |                       |              | Print version and exit                                                        |
 
 The Docker image sets `--root-dir /static` and `--port 8080` by default.
@@ -132,6 +134,55 @@ docker run -p 8080:8080 \
 The proxy strips the prefix before forwarding: a request to `/api/users` is forwarded as `/users` to the target.
 
 The `--proxy-timeout` flag (default 30s) controls how long the server waits for a response from the upstream.
+
+#### Proxy backend TLS
+
+When the backend uses HTTPS with a self-signed or private CA certificate, use `--proxy-ca` to provide
+the CA cert for verification:
+
+```bash
+static-httpserver --root-dir ./dist \
+    --proxy /api=https://internal-service:8443 \
+    --proxy-ca /path/to/ca.crt
+```
+
+For trusted internal networks (e.g. WireGuard mesh) where managing a CA cert is impractical,
+`--proxy-insecure` skips verification entirely:
+
+```bash
+static-httpserver --root-dir ./dist \
+    --proxy /api=https://internal-service:8443 \
+    --proxy-insecure
+```
+
+> **Note:** If both `--proxy-ca` and `--proxy-insecure` are set, `--proxy-ca` takes precedence
+> and a warning is logged. Never use `--proxy-insecure` for backends reachable from untrusted networks.
+
+#### TLS termination with hardened OIDC exposure
+
+A common pattern is to use static-httpserver as a TLS-terminating reverse proxy that exposes
+only specific OIDC/OAuth endpoints publicly, while keeping the rest of the API internal:
+
+```bash
+static-httpserver \
+    --root-dir /var/www/empty \
+    --tls-port 443 \
+    --tls-cert-dir /etc/letsencrypt/live/nimbus.example.com \
+    --proxy /.well-known/openid-configuration=https://10.106.103.1:8443/.well-known/openid-configuration \
+    --proxy /keys=https://10.106.103.1:8443/keys \
+    --proxy /authorize=https://10.106.103.1:8443/authorize \
+    --proxy /oauth/token=https://10.106.103.1:8443/oauth/token \
+    --proxy /login=https://10.106.103.1:8443/login \
+    --proxy /callback=https://10.106.103.1:8443/callback \
+    --proxy /userinfo=https://10.106.103.1:8443/userinfo \
+    --proxy-ca /var/lib/nimbus/ca.crt
+```
+
+In this setup:
+- The browser connects over HTTPS with a trusted public cert (Let's Encrypt)
+- Only OIDC endpoints are forwarded — the rest of the API returns 404
+- The backend connection is verified using the internal CA cert
+- The internal API remains unreachable from the public internet
 
 ### Health Check
 

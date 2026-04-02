@@ -50,6 +50,8 @@ type config struct {
 	cacheMaxFileSize int64
 	proxyRoutes      []proxyRoute
 	proxyTimeout     time.Duration
+	proxyCAFile      string
+	proxyInsecure    bool
 }
 
 func flagOrEnvStr(flagVal string, envName string, def string) string {
@@ -116,17 +118,19 @@ func (p *proxyFlags) Set(val string) error {
 
 func loadConfig() config {
 	var (
-		fPort         string
-		fTlsPort      string
-		fTlsCertDir   string
-		fSpa          bool
-		fShowHeaders  bool
-		fRootDir      string
-		fCacheMax     int64
-		fCacheMaxFile int64
-		fVersion      bool
-		fProxy        proxyFlags
-		fProxyTimeout int
+		fPort          string
+		fTlsPort       string
+		fTlsCertDir    string
+		fSpa           bool
+		fShowHeaders   bool
+		fRootDir       string
+		fCacheMax      int64
+		fCacheMaxFile  int64
+		fVersion       bool
+		fProxy         proxyFlags
+		fProxyTimeout  int
+		fProxyCA       string
+		fProxyInsecure bool
 	)
 
 	flag.StringVar(&fPort, "port", "", "HTTP listening port (env: PORT, disabled if not set)")
@@ -140,6 +144,8 @@ func loadConfig() config {
 	flag.BoolVar(&fVersion, "version", false, "Print version and exit")
 	flag.Var(&fProxy, "proxy", "Proxy route as /prefix=http://target (repeatable, env: PROXY_ROUTES comma-separated)")
 	flag.IntVar(&fProxyTimeout, "proxy-timeout", 0, "Proxy upstream timeout in seconds (env: PROXY_TIMEOUT, default: 30)")
+	flag.StringVar(&fProxyCA, "proxy-ca", "", "CA certificate file for verifying proxy backend TLS (env: PROXY_CA_FILE)")
+	flag.BoolVar(&fProxyInsecure, "proxy-insecure", false, "Skip TLS verification for proxy backends — use only on trusted networks (env: PROXY_INSECURE)")
 	flag.Parse()
 
 	if fVersion {
@@ -177,6 +183,13 @@ func loadConfig() config {
 		}
 	}
 
+	proxyCAFile := flagOrEnvStr(fProxyCA, "PROXY_CA_FILE", "")
+	proxyInsecure := flagOrEnvBool(fProxyInsecure, "PROXY_INSECURE")
+	if proxyCAFile != "" && proxyInsecure {
+		log.Printf("WARNING: --proxy-ca and --proxy-insecure are both set; --proxy-ca takes precedence")
+		proxyInsecure = false
+	}
+
 	return config{
 		port:             flagOrEnvStr(fPort, "PORT", ""),
 		tlsPort:          flagOrEnvStr(fTlsPort, "TLS_PORT", "8443"),
@@ -188,6 +201,8 @@ func loadConfig() config {
 		cacheMaxFileSize: flagOrEnvInt64(fCacheMaxFile, "CACHE_MAX_FILE_SIZE", 5000000),
 		proxyRoutes:      routes,
 		proxyTimeout:     time.Duration(timeout) * time.Second,
+		proxyCAFile:      proxyCAFile,
+		proxyInsecure:    proxyInsecure,
 	}
 }
 
@@ -490,12 +505,30 @@ type proxyHandler struct {
 	proxy  *httputil.ReverseProxy
 }
 
-func buildProxyHandlers(routes []proxyRoute, timeout time.Duration) []proxyHandler {
+func buildProxyHandlers(routes []proxyRoute, timeout time.Duration, caFile string, insecure bool) []proxyHandler {
 	if len(routes) == 0 {
 		return nil
 	}
 
+	tlsCfg := &tls.Config{}
+	if caFile != "" {
+		caPEM, err := os.ReadFile(caFile)
+		if err != nil {
+			log.Fatalf("proxy-ca: failed to read CA file %q: %v", caFile, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caPEM) {
+			log.Fatalf("proxy-ca: no valid certificates found in %q", caFile)
+		}
+		tlsCfg.RootCAs = pool
+		log.Printf("Proxy TLS: using CA from %s", caFile)
+	} else if insecure {
+		tlsCfg.InsecureSkipVerify = true
+		log.Printf("Proxy TLS: InsecureSkipVerify enabled (trusted network only)")
+	}
+
 	transport := &http.Transport{
+		TLSClientConfig:       tlsCfg,
 		MaxIdleConnsPerHost:   20,
 		IdleConnTimeout:       90 * time.Second,
 		ResponseHeaderTimeout: timeout,
@@ -621,7 +654,7 @@ func main() {
 		log.Fatalf("Failed to process index template: %v", err)
 	}
 
-	proxies := buildProxyHandlers(cfg.proxyRoutes, cfg.proxyTimeout)
+	proxies := buildProxyHandlers(cfg.proxyRoutes, cfg.proxyTimeout, cfg.proxyCAFile, cfg.proxyInsecure)
 	handler := wrapHandler(serveStatic(cache, cfg, proxies))
 
 	log.Printf("byjg/static-httpserver %s", version)
