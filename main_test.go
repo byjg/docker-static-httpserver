@@ -3,7 +3,10 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -372,5 +375,174 @@ func TestSaveSelfSignedCertCreatesPrivateDirectory(t *testing.T) {
 	}
 	if perm := info.Mode().Perm(); perm != 0o700 {
 		t.Errorf("cert directory permissions = %04o, want 0700", perm)
+	}
+}
+
+// --- Reverse proxy ---
+
+func TestParseProxyRoutesAcceptsCatchAll(t *testing.T) {
+	routes, err := parseProxyRoutes([]string{"/=http://backend:3000"})
+	if err != nil {
+		t.Fatalf("parseProxyRoutes: %v", err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(routes))
+	}
+	if routes[0].prefix != "" {
+		t.Errorf("catch-all prefix = %q, want empty", routes[0].prefix)
+	}
+	if got := routePrefix(routes[0].prefix); got != "/" {
+		t.Errorf("routePrefix() = %q, want /", got)
+	}
+}
+
+func TestParseProxyRoutesOrdersMostSpecificFirst(t *testing.T) {
+	routes, err := parseProxyRoutes([]string{
+		"/=http://root:3000",
+		"/api=http://api:3000",
+		"/api/admin=http://admin:3000",
+	})
+	if err != nil {
+		t.Fatalf("parseProxyRoutes: %v", err)
+	}
+
+	want := []string{"/api/admin", "/api", ""}
+	for i, prefix := range want {
+		if routes[i].prefix != prefix {
+			t.Errorf("route %d prefix = %q, want %q", i, routes[i].prefix, prefix)
+		}
+	}
+}
+
+func TestParseProxyRoutesRejectsBadInput(t *testing.T) {
+	for _, spec := range []string{"api=http://backend:3000", "/api", "/api=ftp://backend:3000"} {
+		if _, err := parseProxyRoutes([]string{spec}); err == nil {
+			t.Errorf("parseProxyRoutes(%q) accepted an invalid route", spec)
+		}
+	}
+}
+
+// proxyTestServer records what the backend actually received.
+type proxyTestServer struct {
+	path  string
+	proto string
+	host  string
+}
+
+func newProxyBackend(t *testing.T, rec *proxyTestServer) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.path = r.URL.Path
+		rec.proto = r.Header.Get("X-Forwarded-Proto")
+		rec.host = r.Header.Get("X-Forwarded-Host")
+		fmt.Fprint(w, "from backend")
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func frontHandler(t *testing.T, specs []string) http.HandlerFunc {
+	t.Helper()
+	routes, err := parseProxyRoutes(specs)
+	if err != nil {
+		t.Fatalf("parseProxyRoutes: %v", err)
+	}
+	cfg := config{rootDir: t.TempDir(), cacheMaxSize: 1000, cacheMaxFileSize: 1000}
+	return serveStatic(newFileCache(cfg), cfg, buildProxyHandlers(routes, time.Second, "", false))
+}
+
+func TestCatchAllProxyForwardsEveryPathUnchanged(t *testing.T) {
+	var rec proxyTestServer
+	backend := newProxyBackend(t, &rec)
+	handler := frontHandler(t, []string{"/=" + backend.URL})
+
+	for _, path := range []string{"/", "/some/page", "/assets/app.js"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		handler(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s: status %d", path, w.Code)
+		}
+		if rec.path != path {
+			t.Errorf("backend received %q for request %q, want it unchanged", rec.path, path)
+		}
+	}
+}
+
+func TestMoreSpecificRouteWinsOverCatchAll(t *testing.T) {
+	var catchAll, specific proxyTestServer
+	catchAllBackend := newProxyBackend(t, &catchAll)
+	specificBackend := newProxyBackend(t, &specific)
+
+	handler := frontHandler(t, []string{"/=" + catchAllBackend.URL, "/api=" + specificBackend.URL})
+
+	w := httptest.NewRecorder()
+	handler(w, httptest.NewRequest(http.MethodGet, "/api/users", nil))
+
+	if specific.path != "/users" {
+		t.Errorf("specific backend received %q, want /users (prefix stripped)", specific.path)
+	}
+	if catchAll.path != "" {
+		t.Errorf("catch-all backend received %q, it should not have been used", catchAll.path)
+	}
+}
+
+func TestCatchAllProxyDoesNotShadowHealth(t *testing.T) {
+	var rec proxyTestServer
+	backend := newProxyBackend(t, &rec)
+	handler := frontHandler(t, []string{"/=" + backend.URL})
+
+	w := httptest.NewRecorder()
+	handler(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	if body := w.Body.String(); body != `{"status":"ok"}` {
+		t.Errorf("/health returned %q, want the local health response", body)
+	}
+	if rec.path != "" {
+		t.Errorf("/health was proxied to the backend as %q", rec.path)
+	}
+}
+
+func TestProxySetsForwardedHeaders(t *testing.T) {
+	var rec proxyTestServer
+	backend := newProxyBackend(t, &rec)
+	handler := frontHandler(t, []string{"/api=" + backend.URL})
+
+	// A request that arrived over TLS, as the HTTPS listener produces.
+	req := httptest.NewRequest(http.MethodGet, "https://www.example.org/api/users", nil)
+	req.TLS = &tls.ConnectionState{}
+	handler(httptest.NewRecorder(), req)
+
+	if rec.proto != "https" {
+		t.Errorf("X-Forwarded-Proto = %q, want https", rec.proto)
+	}
+	if rec.host != "www.example.org" {
+		t.Errorf("X-Forwarded-Host = %q, want www.example.org", rec.host)
+	}
+
+	rec = proxyTestServer{}
+	plain := httptest.NewRequest(http.MethodGet, "http://www.example.org/api/users", nil)
+	handler(httptest.NewRecorder(), plain)
+	if rec.proto != "http" {
+		t.Errorf("X-Forwarded-Proto over plain HTTP = %q, want http", rec.proto)
+	}
+}
+
+func TestProxyKeepsUpstreamForwardedHeaders(t *testing.T) {
+	var rec proxyTestServer
+	backend := newProxyBackend(t, &rec)
+	handler := frontHandler(t, []string{"/api=" + backend.URL})
+
+	req := httptest.NewRequest(http.MethodGet, "http://internal/api/users", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "public.example.org")
+	handler(httptest.NewRecorder(), req)
+
+	if rec.proto != "https" {
+		t.Errorf("X-Forwarded-Proto = %q, want the upstream value https", rec.proto)
+	}
+	if rec.host != "public.example.org" {
+		t.Errorf("X-Forwarded-Host = %q, want the upstream value", rec.host)
 	}
 }

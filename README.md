@@ -55,7 +55,7 @@ The server can be configured via CLI flags or environment variables. CLI flags t
 | `--show-headers`   | `SHOW_HEADERS`        | `false`      | Display request headers on the parking page                                   |
 | `--cache-max-size` | `CACHE_MAX_SIZE`      | `50000000`   | Max total cache size in bytes (0 to disable)                                  |
 | `--cache-max-file` | `CACHE_MAX_FILE_SIZE` | `5000000`    | Max individual file size to cache in bytes                                    |
-| `--proxy`          | `PROXY_ROUTES`        | *(none)*     | Proxy route as `/prefix=http://target` (repeatable flag, comma-separated env) |
+| `--proxy`          | `PROXY_ROUTES`        | *(none)*     | Proxy route as `/prefix=http://target`, `/` proxies everything (repeatable flag, comma-separated env) |
 | `--proxy-timeout`  | `PROXY_TIMEOUT`       | `30`         | Proxy upstream response timeout in seconds                                    |
 | `--proxy-ca`       | `PROXY_CA_FILE`       | *(none)*     | CA certificate file (PEM) for verifying backend TLS — takes precedence over `--proxy-insecure` |
 | `--proxy-insecure` | `PROXY_INSECURE`      | `false`      | Skip TLS verification for proxy backends — use only on trusted networks       |
@@ -211,6 +211,7 @@ The server can forward requests matching a path prefix to a backend service. Thi
 - Avoiding CORS issues by serving the frontend and API from the same origin
 - Hiding backend services from direct client access
 - Replacing nginx/caddy as a reverse proxy sidecar in Kubernetes
+- Putting HTTPS in front of a backend that only speaks HTTP
 
 ```bash
 # CLI — multiple routes
@@ -227,7 +228,42 @@ docker run -p 8080:8080 \
 
 The proxy strips the prefix before forwarding: a request to `/api/users` is forwarded as `/users` to the target.
 
+When several routes match, the **most specific prefix wins**, whatever order they were given in —
+`/api/admin` is chosen over `/api`, and both over `/`.
+
 The `--proxy-timeout` flag (default 30s) controls how long the server waits for a response from the upstream.
+
+Proxied requests carry `X-Forwarded-Proto` and `X-Forwarded-Host` (alongside the `X-Forwarded-For`
+added by Go), so a backend behind the HTTPS listener can tell that the client spoke HTTPS — Express
+needs it for `req.protocol`, `secure` cookies and absolute redirects. Values set by an upstream proxy
+are preserved.
+
+#### HTTPS for a backend that has none
+
+`/` is the catch-all prefix: it matches every path and strips nothing, so the whole site can be
+handed to a backend while static-httpserver terminates TLS with its own certificate. The backend
+keeps serving plain HTTP and never deals with certificates.
+
+```bash
+# Node (or any HTTP backend) on :3000, reachable over HTTPS on :443
+static-httpserver \
+    --root-dir /var/www/empty \
+    --only-https --tls-port 443 \
+    --proxy /=http://127.0.0.1:3000
+```
+
+```bash
+# Docker: TLS terminated here, plain HTTP to the app container
+docker run -p 8443:8443 \
+    -e ONLY_HTTPS=true \
+    -e PROXY_ROUTES="/=http://app:3000" \
+    -v $(pwd)/certs:/certs \
+    byjg/static-httpserver
+```
+
+`/health` is always answered locally, so it stays usable as a probe even behind a catch-all route.
+Everything else goes to the backend — routes are matched before the static file lookup — so point
+`--root-dir` at an empty directory when the backend owns the whole site.
 
 #### Proxy backend TLS
 

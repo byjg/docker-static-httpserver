@@ -98,10 +98,12 @@ func parseProxyRoutes(specs []string) ([]proxyRoute, error) {
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("invalid proxy route %q: expected /prefix=http://target", spec)
 		}
-		prefix := strings.TrimRight(parts[0], "/")
-		if prefix == "" || prefix[0] != '/' {
+		if parts[0] == "" || parts[0][0] != '/' {
 			return nil, fmt.Errorf("invalid proxy prefix %q: must start with /", parts[0])
 		}
+		// "/" is the catch-all: it trims down to an empty prefix, which matches
+		// every path and strips nothing.
+		prefix := strings.TrimRight(parts[0], "/")
 		target, err := url.Parse(parts[1])
 		if err != nil {
 			return nil, fmt.Errorf("invalid proxy target %q: %w", parts[1], err)
@@ -111,7 +113,22 @@ func parseProxyRoutes(specs []string) ([]proxyRoute, error) {
 		}
 		routes = append(routes, proxyRoute{prefix: prefix, target: target})
 	}
+
+	// The longest prefix wins, so a catch-all never shadows a specific route
+	// regardless of the order the routes were given in.
+	sort.SliceStable(routes, func(i, j int) bool {
+		return len(routes[i].prefix) > len(routes[j].prefix)
+	})
+
 	return routes, nil
+}
+
+// routePrefix is how a prefix is displayed; the catch-all is stored as "".
+func routePrefix(prefix string) string {
+	if prefix == "" {
+		return "/"
+	}
+	return prefix
 }
 
 type proxyFlags []string
@@ -751,6 +768,20 @@ func buildProxyHandlers(routes []proxyRoute, timeout time.Duration, caFile strin
 			prefix: prefix,
 			proxy: &httputil.ReverseProxy{
 				Director: func(req *http.Request) {
+					// TLS is terminated here, so the backend can only learn the
+					// original scheme and host from the forwarded headers. An
+					// upstream proxy's values are left untouched.
+					if _, ok := req.Header["X-Forwarded-Proto"]; !ok {
+						scheme := "http"
+						if req.TLS != nil {
+							scheme = "https"
+						}
+						req.Header.Set("X-Forwarded-Proto", scheme)
+					}
+					if _, ok := req.Header["X-Forwarded-Host"]; !ok && req.Host != "" {
+						req.Header.Set("X-Forwarded-Host", req.Host)
+					}
+
 					req.URL.Scheme = target.Scheme
 					req.URL.Host = target.Host
 					req.Host = target.Host
@@ -764,7 +795,7 @@ func buildProxyHandlers(routes []proxyRoute, timeout time.Duration, caFile strin
 				},
 				Transport: transport,
 				ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-					log.Printf("proxy error [%s]: %v", prefix, err)
+					log.Printf("proxy error [%s]: %v", routePrefix(prefix), err)
 					http.Error(w, "Bad Gateway", http.StatusBadGateway)
 				},
 			},
@@ -876,7 +907,7 @@ func main() {
 		log.Printf("Cache max size: %d bytes, max file size: %d bytes", cache.maxSize, cache.maxFileSize)
 	}
 	for _, r := range cfg.proxyRoutes {
-		log.Printf("Proxy: %s -> %s (timeout: %s)", r.prefix, r.target, cfg.proxyTimeout)
+		log.Printf("Proxy: %s -> %s (timeout: %s)", routePrefix(r.prefix), r.target, cfg.proxyTimeout)
 	}
 
 	// Start HTTP server (only if port is configured)
