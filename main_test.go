@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -447,7 +448,13 @@ func frontHandler(t *testing.T, specs []string) http.HandlerFunc {
 	if err != nil {
 		t.Fatalf("parseProxyRoutes: %v", err)
 	}
-	cfg := config{rootDir: t.TempDir(), cacheMaxSize: 1000, cacheMaxFileSize: 1000}
+	cfg := config{
+		rootDir:          t.TempDir(),
+		cacheMaxSize:     1000,
+		cacheMaxFileSize: 1000,
+		healthPath:       "/_health",
+		headersPath:      "/_headers",
+	}
 	return serveStatic(newFileCache(cfg), cfg, buildProxyHandlers(routes, time.Second, "", false))
 }
 
@@ -494,13 +501,76 @@ func TestCatchAllProxyDoesNotShadowHealth(t *testing.T) {
 	handler := frontHandler(t, []string{"/=" + backend.URL})
 
 	w := httptest.NewRecorder()
-	handler(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+	handler(w, httptest.NewRequest(http.MethodGet, "/_health", nil))
 
 	if body := w.Body.String(); body != `{"status":"ok"}` {
-		t.Errorf("/health returned %q, want the local health response", body)
+		t.Errorf("/_health returned %q, want the local health response", body)
 	}
 	if rec.path != "" {
-		t.Errorf("/health was proxied to the backend as %q", rec.path)
+		t.Errorf("/_health was proxied to the backend as %q", rec.path)
+	}
+}
+
+func TestCatchAllProxyReachesTheBackendHealthEndpoint(t *testing.T) {
+	var rec proxyTestServer
+	backend := newProxyBackend(t, &rec)
+	handler := frontHandler(t, []string{"/=" + backend.URL})
+
+	// The built-in endpoint lives under /_health, so a backend keeps its own.
+	handler(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	if rec.path != "/health" {
+		t.Errorf("backend received %q, want /health to be proxied through", rec.path)
+	}
+}
+
+func TestHealthAndHeadersPathsAreConfigurable(t *testing.T) {
+	cfg := config{
+		rootDir:          t.TempDir(),
+		cacheMaxSize:     1000,
+		cacheMaxFileSize: 1000,
+		healthPath:       "/x-healthz",
+		headersPath:      "/x-headers",
+		showHeaders:      true,
+	}
+	handler := serveStatic(newFileCache(cfg), cfg, nil)
+
+	w := httptest.NewRecorder()
+	handler(w, httptest.NewRequest(http.MethodGet, "/x-healthz", nil))
+	if body := w.Body.String(); body != `{"status":"ok"}` {
+		t.Errorf("/x-healthz returned %q, want the health response", body)
+	}
+
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/x-headers", nil)
+	req.Header.Set("X-Test", "value")
+	handler(w, req)
+	if !strings.Contains(w.Body.String(), "X-Test") {
+		t.Errorf("/x-headers returned %q, want the request headers", w.Body.String())
+	}
+
+	// The default paths are no longer served once they have been moved.
+	w = httptest.NewRecorder()
+	handler(w, httptest.NewRequest(http.MethodGet, "/_health", nil))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("/_health returned %d, want 404 after the path was changed", w.Code)
+	}
+}
+
+func TestHeadersEndpointNeedsShowHeaders(t *testing.T) {
+	cfg := config{
+		rootDir:          t.TempDir(),
+		cacheMaxSize:     1000,
+		cacheMaxFileSize: 1000,
+		healthPath:       "/_health",
+		headersPath:      "/_headers",
+	}
+	handler := serveStatic(newFileCache(cfg), cfg, nil)
+
+	w := httptest.NewRecorder()
+	handler(w, httptest.NewRequest(http.MethodGet, "/_headers", nil))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("/_headers returned %d without --show-headers, want 404", w.Code)
 	}
 }
 

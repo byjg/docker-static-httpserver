@@ -53,6 +53,8 @@ The server can be configured via CLI flags or environment variables. CLI flags t
 | `--tls-selfsigned-hosts` | `TLS_SELFSIGNED_HOSTS` | *(none)* | Extra hostnames/IPs the self-signed certificate must be valid for (comma-separated) |
 | `--spa`            | `SPA_MODE`            | `false`      | Enable SPA routing                                                            |
 | `--show-headers`   | `SHOW_HEADERS`        | `false`      | Display request headers on the parking page                                   |
+| `--health-path`    | `HEALTH_PATH`         | `/_health`   | Path of the health endpoint                                                   |
+| `--headers-path`   | `HEADERS_PATH`        | `/_headers`  | Path of the request headers endpoint (needs `--show-headers`)                 |
 | `--cache-max-size` | `CACHE_MAX_SIZE`      | `50000000`   | Max total cache size in bytes (0 to disable)                                  |
 | `--cache-max-file` | `CACHE_MAX_FILE_SIZE` | `5000000`    | Max individual file size to cache in bytes                                    |
 | `--proxy`          | `PROXY_ROUTES`        | *(none)*     | Proxy route as `/prefix=http://target`, `/` proxies everything (repeatable flag, comma-separated env) |
@@ -159,10 +161,10 @@ instead of skipping verification:
 
 ```bash
 # Quick and dirty: skip verification
-curl -k https://localhost:8443/health
+curl -k https://localhost:8443/_health
 
 # Or trust the generated certificate
-curl --cacert ./certs/selfsigned-cert.pem https://localhost:8443/health
+curl --cacert ./certs/selfsigned-cert.pem https://localhost:8443/_health
 ```
 
 #### Your own certificates
@@ -261,9 +263,11 @@ docker run -p 8443:8443 \
     byjg/static-httpserver
 ```
 
-`/health` is always answered locally, so it stays usable as a probe even behind a catch-all route.
-Everything else goes to the backend — routes are matched before the static file lookup — so point
-`--root-dir` at an empty directory when the backend owns the whole site.
+The health endpoint is always answered locally, so it stays usable as a probe even behind a
+catch-all route. It lives at `/_health` precisely so it does not collide with a backend's own
+`/health` — which is proxied through untouched. Move it with `--health-path` if the underscore name
+is taken as well. Everything else goes to the backend — routes are matched before the static file
+lookup — so point `--root-dir` at an empty directory when the backend owns the whole site.
 
 #### Proxy backend TLS
 
@@ -317,8 +321,16 @@ In this setup:
 
 ### Health Check
 
-The server exposes a `/health` endpoint that returns `{"status":"ok"}` with HTTP 200.
+The server exposes a `/_health` endpoint that returns `{"status":"ok"}` with HTTP 200.
 This is used by the Helm chart for Kubernetes liveness and readiness probes.
+
+The underscore keeps it out of the way of an application's own `/health`, which matters when the
+whole site is proxied to a backend. `--health-path` (env `HEALTH_PATH`) moves it; the Helm chart
+exposes it as `parameters.healthPath` and points the probes at whatever it is set to.
+
+> **Upgrading:** the endpoint used to be `/health`. Kubernetes probes defined outside this chart,
+> uptime monitors and load balancer checks have to be pointed at `/_health`, or the old path
+> restored with `--health-path /health`.
 
 ## Using with Helm 3
 
@@ -350,6 +362,7 @@ parameters:
   youtube: ""
   spaMode: ""
   showHeaders: ""
+  healthPath: ""        # defaults to /_health
   rootDir: ""
   port: ""
   tlsPort: ""

@@ -49,6 +49,8 @@ type config struct {
 	tlsCertFile        string
 	tlsKeyFile         string
 	tlsSelfSignedHosts []string
+	healthPath         string
+	headersPath        string
 	spaMode            bool
 	showHeaders        bool
 	rootDir            string
@@ -149,6 +151,8 @@ func loadConfig() config {
 		fTlsCertFile   string
 		fTlsKeyFile    string
 		fTlsSSHosts    string
+		fHealthPath    string
+		fHeadersPath   string
 		fSpa           bool
 		fShowHeaders   bool
 		fRootDir       string
@@ -169,6 +173,8 @@ func loadConfig() config {
 	flag.StringVar(&fTlsCertFile, "tls-cert-file", "", "TLS certificate file, overrides --tls-cert-dir (env: TLS_CERT_FILE)")
 	flag.StringVar(&fTlsKeyFile, "tls-key-file", "", "TLS private key file, overrides --tls-cert-dir (env: TLS_KEY_FILE)")
 	flag.StringVar(&fTlsSSHosts, "tls-selfsigned-hosts", "", "Extra hostnames/IPs for the generated self-signed certificate, comma-separated (env: TLS_SELFSIGNED_HOSTS)")
+	flag.StringVar(&fHealthPath, "health-path", "", "Path of the health endpoint (env: HEALTH_PATH, default: /_health)")
+	flag.StringVar(&fHeadersPath, "headers-path", "", "Path of the request headers endpoint (env: HEADERS_PATH, default: /_headers)")
 	flag.BoolVar(&fSpa, "spa", false, "Enable SPA mode (env: SPA_MODE)")
 	flag.BoolVar(&fShowHeaders, "show-headers", false, "Show request headers on parking page (env: SHOW_HEADERS)")
 	flag.StringVar(&fRootDir, "root-dir", "", "Root directory for static files (env: ROOT_DIR, required)")
@@ -216,6 +222,15 @@ func loadConfig() config {
 		}
 	}
 
+	healthPath := flagOrEnvStr(fHealthPath, "HEALTH_PATH", "/_health")
+	headersPath := flagOrEnvStr(fHeadersPath, "HEADERS_PATH", "/_headers")
+	for name, path := range map[string]string{"--health-path": healthPath, "--headers-path": headersPath} {
+		if path[0] != '/' {
+			fmt.Fprintf(os.Stderr, "Error: invalid %s %q: must start with /\n", name, path)
+			os.Exit(1)
+		}
+	}
+
 	onlyHTTPS := flagOrEnvBool(fOnlyHTTPS, "ONLY_HTTPS")
 	httpPort := flagOrEnvStr(fPort, "PORT", "")
 	if onlyHTTPS && httpPort != "" {
@@ -252,6 +267,8 @@ func loadConfig() config {
 		tlsCertFile:        tlsCertFile,
 		tlsKeyFile:         tlsKeyFile,
 		tlsSelfSignedHosts: splitList(flagOrEnvStr(fTlsSSHosts, "TLS_SELFSIGNED_HOSTS", "")),
+		healthPath:         healthPath,
+		headersPath:        headersPath,
 		spaMode:            flagOrEnvBool(fSpa, "SPA_MODE"),
 		showHeaders:        flagOrEnvBool(fShowHeaders, "SHOW_HEADERS"),
 		rootDir:            rootDir,
@@ -517,6 +534,7 @@ type Variables struct {
 	Twitter     string
 	Youtube     string
 	ShowHeaders bool
+	HeadersPath string
 }
 
 func loadVariables(cfg config) Variables {
@@ -529,6 +547,7 @@ func loadVariables(cfg config) Variables {
 		Twitter:     os.Getenv("TWITTER"),
 		Youtube:     os.Getenv("YOUTUBE"),
 		ShowHeaders: cfg.showHeaders,
+		HeadersPath: cfg.headersPath,
 	}
 }
 
@@ -828,14 +847,14 @@ func wrapHandler(h http.HandlerFunc) http.HandlerFunc {
 
 func serveStatic(cache *fileCache, cfg config, proxies []proxyHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" {
+		if r.URL.Path == cfg.healthPath {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprint(w, `{"status":"ok"}`)
 			return
 		}
 
-		if r.URL.Path == "/headers" && cfg.showHeaders {
+		if r.URL.Path == cfg.headersPath && cfg.showHeaders {
 			headers := make(map[string]string)
 			keys := make([]string, 0, len(r.Header))
 			for k := range r.Header {

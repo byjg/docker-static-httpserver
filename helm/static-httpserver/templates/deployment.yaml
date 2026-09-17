@@ -41,11 +41,11 @@ spec:
               protocol: TCP
           livenessProbe:
             httpGet:
-              path: /health
+              path: {{ .Values.parameters.healthPath | default "/_health" }}
               port: http
           readinessProbe:
             httpGet:
-              path: /health
+              path: {{ .Values.parameters.healthPath | default "/_health" }}
               port: http
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
@@ -85,6 +85,10 @@ spec:
             {{- if .Values.parameters.showHeaders }}
             - name: SHOW_HEADERS
               value: {{ .Values.parameters.showHeaders | quote }}
+            {{- end }}
+            {{- if .Values.parameters.healthPath }}
+            - name: HEALTH_PATH
+              value: {{ .Values.parameters.healthPath | quote }}
             {{- end }}
             {{- if .Values.parameters.port }}
             - name: PORT
