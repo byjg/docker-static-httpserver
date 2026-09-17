@@ -7,10 +7,11 @@ RUN make build
 FROM alpine:3.23
 RUN apk --no-cache add ca-certificates
 RUN adduser -D -h /app appuser
+RUN mkdir -p /certs && chown appuser:appuser /certs
 WORKDIR /app
 COPY --chown=appuser:appuser html /static
 COPY --from=builder --chown=appuser:appuser /app/bin/static-httpserver .
 USER appuser
-ENV ROOT_DIR=/static PORT=8080
+ENV ROOT_DIR=/static PORT=8080 TLS_CERT_DIR=/certs
 CMD ["./static-httpserver"]
 

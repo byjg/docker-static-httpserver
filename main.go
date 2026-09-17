@@ -17,6 +17,7 @@ import (
 	"log"
 	"math/big"
 	"mime"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -40,18 +41,25 @@ type proxyRoute struct {
 }
 
 type config struct {
-	port             string
-	tlsPort          string
-	tlsCertDir       string
-	spaMode          bool
-	showHeaders      bool
-	rootDir          string
-	cacheMaxSize     int64
-	cacheMaxFileSize int64
-	proxyRoutes      []proxyRoute
-	proxyTimeout     time.Duration
-	proxyCAFile      string
-	proxyInsecure    bool
+	bindAddr           string
+	onlyHTTPS          bool
+	port               string
+	tlsPort            string
+	tlsCertDir         string
+	tlsCertFile        string
+	tlsKeyFile         string
+	tlsSelfSignedHosts []string
+	healthPath         string
+	headersPath        string
+	spaMode            bool
+	showHeaders        bool
+	rootDir            string
+	cacheMaxSize       int64
+	cacheMaxFileSize   int64
+	proxyRoutes        []proxyRoute
+	proxyTimeout       time.Duration
+	proxyCAFile        string
+	proxyInsecure      bool
 }
 
 func flagOrEnvStr(flagVal string, envName string, def string) string {
@@ -92,10 +100,12 @@ func parseProxyRoutes(specs []string) ([]proxyRoute, error) {
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("invalid proxy route %q: expected /prefix=http://target", spec)
 		}
-		prefix := strings.TrimRight(parts[0], "/")
-		if prefix == "" || prefix[0] != '/' {
+		if parts[0] == "" || parts[0][0] != '/' {
 			return nil, fmt.Errorf("invalid proxy prefix %q: must start with /", parts[0])
 		}
+		// "/" is the catch-all: it trims down to an empty prefix, which matches
+		// every path and strips nothing.
+		prefix := strings.TrimRight(parts[0], "/")
 		target, err := url.Parse(parts[1])
 		if err != nil {
 			return nil, fmt.Errorf("invalid proxy target %q: %w", parts[1], err)
@@ -105,7 +115,22 @@ func parseProxyRoutes(specs []string) ([]proxyRoute, error) {
 		}
 		routes = append(routes, proxyRoute{prefix: prefix, target: target})
 	}
+
+	// The longest prefix wins, so a catch-all never shadows a specific route
+	// regardless of the order the routes were given in.
+	sort.SliceStable(routes, func(i, j int) bool {
+		return len(routes[i].prefix) > len(routes[j].prefix)
+	})
+
 	return routes, nil
+}
+
+// routePrefix is how a prefix is displayed; the catch-all is stored as "".
+func routePrefix(prefix string) string {
+	if prefix == "" {
+		return "/"
+	}
+	return prefix
 }
 
 type proxyFlags []string
@@ -118,9 +143,16 @@ func (p *proxyFlags) Set(val string) error {
 
 func loadConfig() config {
 	var (
+		fBind          string
+		fOnlyHTTPS     bool
 		fPort          string
 		fTlsPort       string
 		fTlsCertDir    string
+		fTlsCertFile   string
+		fTlsKeyFile    string
+		fTlsSSHosts    string
+		fHealthPath    string
+		fHeadersPath   string
 		fSpa           bool
 		fShowHeaders   bool
 		fRootDir       string
@@ -133,9 +165,16 @@ func loadConfig() config {
 		fProxyInsecure bool
 	)
 
+	flag.StringVar(&fBind, "bind", "", "IP address to listen on (env: BIND_ADDRESS, default: 0.0.0.0)")
+	flag.BoolVar(&fOnlyHTTPS, "only-https", false, "Never start the plain HTTP listener, even when a port is set (env: ONLY_HTTPS)")
 	flag.StringVar(&fPort, "port", "", "HTTP listening port (env: PORT, disabled if not set)")
 	flag.StringVar(&fTlsPort, "tls-port", "", "HTTPS listening port (env: TLS_PORT, default: 8443)")
-	flag.StringVar(&fTlsCertDir, "tls-cert-dir", "", "TLS certificate directory (env: TLS_CERT_DIR, default: /certs)")
+	flag.StringVar(&fTlsCertDir, "tls-cert-dir", "", "TLS certificate directory (env: TLS_CERT_DIR, default: /certs as root, ~/.static-httpserver/certs otherwise)")
+	flag.StringVar(&fTlsCertFile, "tls-cert-file", "", "TLS certificate file, overrides --tls-cert-dir (env: TLS_CERT_FILE)")
+	flag.StringVar(&fTlsKeyFile, "tls-key-file", "", "TLS private key file, overrides --tls-cert-dir (env: TLS_KEY_FILE)")
+	flag.StringVar(&fTlsSSHosts, "tls-selfsigned-hosts", "", "Extra hostnames/IPs for the generated self-signed certificate, comma-separated (env: TLS_SELFSIGNED_HOSTS)")
+	flag.StringVar(&fHealthPath, "health-path", "", "Path of the health endpoint (env: HEALTH_PATH, default: /_health)")
+	flag.StringVar(&fHeadersPath, "headers-path", "", "Path of the request headers endpoint (env: HEADERS_PATH, default: /_headers)")
 	flag.BoolVar(&fSpa, "spa", false, "Enable SPA mode (env: SPA_MODE)")
 	flag.BoolVar(&fShowHeaders, "show-headers", false, "Show request headers on parking page (env: SHOW_HEADERS)")
 	flag.StringVar(&fRootDir, "root-dir", "", "Root directory for static files (env: ROOT_DIR, required)")
@@ -183,6 +222,35 @@ func loadConfig() config {
 		}
 	}
 
+	healthPath := flagOrEnvStr(fHealthPath, "HEALTH_PATH", "/_health")
+	headersPath := flagOrEnvStr(fHeadersPath, "HEADERS_PATH", "/_headers")
+	for name, path := range map[string]string{"--health-path": healthPath, "--headers-path": headersPath} {
+		if path[0] != '/' {
+			fmt.Fprintf(os.Stderr, "Error: invalid %s %q: must start with /\n", name, path)
+			os.Exit(1)
+		}
+	}
+
+	onlyHTTPS := flagOrEnvBool(fOnlyHTTPS, "ONLY_HTTPS")
+	httpPort := flagOrEnvStr(fPort, "PORT", "")
+	if onlyHTTPS && httpPort != "" {
+		log.Printf("HTTP port %s ignored: --only-https (env: ONLY_HTTPS) is set", httpPort)
+		httpPort = ""
+	}
+
+	bindAddr := flagOrEnvStr(fBind, "BIND_ADDRESS", "0.0.0.0")
+	if net.ParseIP(bindAddr) == nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid --bind address %q: expected an IP address\n", bindAddr)
+		os.Exit(1)
+	}
+
+	tlsCertFile := flagOrEnvStr(fTlsCertFile, "TLS_CERT_FILE", "")
+	tlsKeyFile := flagOrEnvStr(fTlsKeyFile, "TLS_KEY_FILE", "")
+	if (tlsCertFile == "") != (tlsKeyFile == "") {
+		fmt.Fprintln(os.Stderr, "Error: --tls-cert-file and --tls-key-file must be used together")
+		os.Exit(1)
+	}
+
 	proxyCAFile := flagOrEnvStr(fProxyCA, "PROXY_CA_FILE", "")
 	proxyInsecure := flagOrEnvBool(fProxyInsecure, "PROXY_INSECURE")
 	if proxyCAFile != "" && proxyInsecure {
@@ -191,24 +259,38 @@ func loadConfig() config {
 	}
 
 	return config{
-		port:             flagOrEnvStr(fPort, "PORT", ""),
-		tlsPort:          flagOrEnvStr(fTlsPort, "TLS_PORT", "8443"),
-		tlsCertDir:       flagOrEnvStr(fTlsCertDir, "TLS_CERT_DIR", "/certs"),
-		spaMode:          flagOrEnvBool(fSpa, "SPA_MODE"),
-		showHeaders:      flagOrEnvBool(fShowHeaders, "SHOW_HEADERS"),
-		rootDir:          rootDir,
-		cacheMaxSize:     flagOrEnvInt64(fCacheMax, "CACHE_MAX_SIZE", 50000000),
-		cacheMaxFileSize: flagOrEnvInt64(fCacheMaxFile, "CACHE_MAX_FILE_SIZE", 5000000),
-		proxyRoutes:      routes,
-		proxyTimeout:     time.Duration(timeout) * time.Second,
-		proxyCAFile:      proxyCAFile,
-		proxyInsecure:    proxyInsecure,
+		bindAddr:           bindAddr,
+		onlyHTTPS:          onlyHTTPS,
+		port:               httpPort,
+		tlsPort:            flagOrEnvStr(fTlsPort, "TLS_PORT", "8443"),
+		tlsCertDir:         flagOrEnvStr(fTlsCertDir, "TLS_CERT_DIR", defaultCertDir()),
+		tlsCertFile:        tlsCertFile,
+		tlsKeyFile:         tlsKeyFile,
+		tlsSelfSignedHosts: splitList(flagOrEnvStr(fTlsSSHosts, "TLS_SELFSIGNED_HOSTS", "")),
+		healthPath:         healthPath,
+		headersPath:        headersPath,
+		spaMode:            flagOrEnvBool(fSpa, "SPA_MODE"),
+		showHeaders:        flagOrEnvBool(fShowHeaders, "SHOW_HEADERS"),
+		rootDir:            rootDir,
+		cacheMaxSize:       flagOrEnvInt64(fCacheMax, "CACHE_MAX_SIZE", 50000000),
+		cacheMaxFileSize:   flagOrEnvInt64(fCacheMaxFile, "CACHE_MAX_FILE_SIZE", 5000000),
+		proxyRoutes:        routes,
+		proxyTimeout:       time.Duration(timeout) * time.Second,
+		proxyCAFile:        proxyCAFile,
+		proxyInsecure:      proxyInsecure,
 	}
 }
 
 func parseBool(s string) bool {
 	s = strings.ToLower(strings.TrimSpace(s))
 	return s == "true" || s == "1" || s == "yes"
+}
+
+func splitList(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
 }
 
 func parseInt64(s string) int64 {
@@ -221,63 +303,224 @@ func parseInt64(s string) int64 {
 
 // --- TLS ---
 
-func loadOrGenerateTLS(certDir string) (tls.Certificate, error) {
+// defaultCertDir keeps certificates in /certs for root (the container case) and in
+// the user's own directory otherwise, where an unprivileged process can write them.
+func defaultCertDir() string {
+	if os.Geteuid() == 0 {
+		return "/certs"
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".static-httpserver", "certs")
+	}
+	return "/certs"
+}
+
+// A persisted self-signed certificate is renewed once it gets this close to expiring.
+var selfSignedRenewBefore = 30 * 24 * time.Hour
+
+func selfSignedPaths(certDir string) (string, string) {
+	return filepath.Join(certDir, "selfsigned-cert.pem"), filepath.Join(certDir, "selfsigned-key.pem")
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// bindHosts returns the addresses the certificate needs to cover for clients to
+// reach the server by IP. A wildcard bind listens on every interface, so every
+// routable address of the machine is a valid way in.
+func bindHosts(bindAddr string) []string {
+	ip := net.ParseIP(bindAddr)
+	if ip != nil && !ip.IsUnspecified() {
+		return []string{ip.String()}
+	}
+
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		log.Printf("TLS could not list interface addresses: %v", err)
+		return nil
+	}
+
+	var hosts []string
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok || ipNet.IP.IsLoopback() || ipNet.IP.IsLinkLocalUnicast() {
+			continue
+		}
+		hosts = append(hosts, ipNet.IP.String())
+	}
+	return hosts
+}
+
+// selfSignedHosts returns the names the generated certificate must be valid for:
+// the well-known local names, the addresses the server listens on, and whatever
+// the user asked for.
+func selfSignedHosts(bindAddr string, extra []string) []string {
+	hosts := []string{"localhost", "127.0.0.1", "::1"}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		hosts = append(hosts, h)
+	}
+	hosts = append(hosts, bindHosts(bindAddr)...)
+	hosts = append(hosts, extra...)
+
+	seen := make(map[string]bool, len(hosts))
+	unique := hosts[:0]
+	for _, h := range hosts {
+		h = strings.TrimSpace(h)
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		unique = append(unique, h)
+	}
+	return unique
+}
+
+func loadOrGenerateTLS(cfg config) (tls.Certificate, error) {
+	// An explicit pair is a deliberate choice: fail loudly instead of quietly
+	// falling back to a self-signed certificate.
+	if cfg.tlsCertFile != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.tlsCertFile, cfg.tlsKeyFile)
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("loading certificate %s and key %s: %w", cfg.tlsCertFile, cfg.tlsKeyFile, err)
+		}
+		log.Printf("TLS using certificate %s", cfg.tlsCertFile)
+		return cert, nil
+	}
+
+	certDir := cfg.tlsCertDir
 	certFile := filepath.Join(certDir, "cert.pem")
 	keyFile := filepath.Join(certDir, "key.pem")
 
-	if _, err := os.Stat(certFile); err == nil {
-		if _, err := os.Stat(keyFile); err == nil {
-			cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-			if err != nil {
-				return tls.Certificate{}, fmt.Errorf("loading certificates from %s: %w", certDir, err)
-			}
-			log.Printf("TLS using certificates from %s", certDir)
-			return cert, nil
+	if fileExists(certFile) && fileExists(keyFile) {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("loading certificates from %s: %w", certDir, err)
+		}
+		log.Printf("TLS using certificates from %s", certDir)
+		return cert, nil
+	}
+
+	hosts := selfSignedHosts(cfg.bindAddr, cfg.tlsSelfSignedHosts)
+
+	cert, err := loadSelfSignedCert(certDir, hosts)
+	if err == nil {
+		log.Printf("TLS reusing self-signed certificate from %s (valid until %s)",
+			certDir, cert.Leaf.NotAfter.Format(time.RFC3339))
+		return cert, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		log.Printf("TLS regenerating self-signed certificate: %v", err)
+	}
+
+	certPEM, keyPEM, err := generateSelfSignedCert(hosts)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+
+	if err := saveSelfSignedCert(certDir, certPEM, keyPEM); err != nil {
+		log.Printf("TLS self-signed certificate kept in memory, not persisted: %v", err)
+	} else {
+		log.Printf("TLS self-signed certificate saved to %s", certDir)
+	}
+	log.Printf("TLS using self-signed certificate for %s", strings.Join(hosts, ", "))
+
+	return tls.X509KeyPair(certPEM, keyPEM)
+}
+
+// loadSelfSignedCert returns the previously generated certificate when it is still
+// usable. It reports os.ErrNotExist when there is nothing saved yet; any other error
+// describes why the saved pair has to be replaced.
+func loadSelfSignedCert(certDir string, hosts []string) (tls.Certificate, error) {
+	certFile, keyFile := selfSignedPaths(certDir)
+	if !fileExists(certFile) || !fileExists(keyFile) {
+		return tls.Certificate{}, os.ErrNotExist
+	}
+
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("saved pair is unusable: %w", err)
+	}
+
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("saved certificate is unreadable: %w", err)
+	}
+
+	if time.Now().Add(selfSignedRenewBefore).After(leaf.NotAfter) {
+		return tls.Certificate{}, fmt.Errorf("saved certificate expires at %s", leaf.NotAfter.Format(time.RFC3339))
+	}
+
+	for _, h := range hosts {
+		if err := leaf.VerifyHostname(h); err != nil {
+			return tls.Certificate{}, fmt.Errorf("saved certificate is not valid for %q", h)
 		}
 	}
 
-	log.Printf("TLS using self-signed certificate")
-	return generateSelfSignedCert()
+	cert.Leaf = leaf
+	return cert, nil
 }
 
-func generateSelfSignedCert() (tls.Certificate, error) {
+func saveSelfSignedCert(certDir string, certPEM, keyPEM []byte) error {
+	if err := os.MkdirAll(certDir, 0o700); err != nil {
+		return err
+	}
+	certFile, keyFile := selfSignedPaths(certDir)
+	if err := os.WriteFile(keyFile, keyPEM, 0o600); err != nil {
+		return err
+	}
+	return os.WriteFile(certFile, certPEM, 0o644)
+}
+
+func generateSelfSignedCert(hosts []string) (certPEM []byte, keyPEM []byte, err error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("generating private key: %w", err)
+		return nil, nil, fmt.Errorf("generating private key: %w", err)
 	}
 
 	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("generating serial number: %w", err)
+		return nil, nil, fmt.Errorf("generating serial number: %w", err)
 	}
 
 	tmpl := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
 			Organization: []string{"Static HTTP Server"},
-			CommonName:   "localhost",
+			CommonName:   hosts[0],
 		},
-		NotBefore:             time.Now(),
+		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 	}
 
-	certDER, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("creating certificate: %w", err)
+	// Clients have required the SubjectAltName extension for years; a certificate
+	// with only a CommonName fails hostname verification even when it is trusted.
+	for _, h := range hosts {
+		if ip := net.ParseIP(h); ip != nil {
+			tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
+		} else {
+			tmpl.DNSNames = append(tmpl.DNSNames, h)
+		}
 	}
 
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	certDER, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating certificate: %w", err)
+	}
 
 	keyDER, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("marshaling private key: %w", err)
+		return nil, nil, fmt.Errorf("marshaling private key: %w", err)
 	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 
-	return tls.X509KeyPair(certPEM, keyPEM)
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	return certPEM, keyPEM, nil
 }
 
 // --- Template Variables ---
@@ -291,6 +534,7 @@ type Variables struct {
 	Twitter     string
 	Youtube     string
 	ShowHeaders bool
+	HeadersPath string
 }
 
 func loadVariables(cfg config) Variables {
@@ -303,6 +547,7 @@ func loadVariables(cfg config) Variables {
 		Twitter:     os.Getenv("TWITTER"),
 		Youtube:     os.Getenv("YOUTUBE"),
 		ShowHeaders: cfg.showHeaders,
+		HeadersPath: cfg.headersPath,
 	}
 }
 
@@ -542,6 +787,20 @@ func buildProxyHandlers(routes []proxyRoute, timeout time.Duration, caFile strin
 			prefix: prefix,
 			proxy: &httputil.ReverseProxy{
 				Director: func(req *http.Request) {
+					// TLS is terminated here, so the backend can only learn the
+					// original scheme and host from the forwarded headers. An
+					// upstream proxy's values are left untouched.
+					if _, ok := req.Header["X-Forwarded-Proto"]; !ok {
+						scheme := "http"
+						if req.TLS != nil {
+							scheme = "https"
+						}
+						req.Header.Set("X-Forwarded-Proto", scheme)
+					}
+					if _, ok := req.Header["X-Forwarded-Host"]; !ok && req.Host != "" {
+						req.Header.Set("X-Forwarded-Host", req.Host)
+					}
+
 					req.URL.Scheme = target.Scheme
 					req.URL.Host = target.Host
 					req.Host = target.Host
@@ -555,7 +814,7 @@ func buildProxyHandlers(routes []proxyRoute, timeout time.Duration, caFile strin
 				},
 				Transport: transport,
 				ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-					log.Printf("proxy error [%s]: %v", prefix, err)
+					log.Printf("proxy error [%s]: %v", routePrefix(prefix), err)
 					http.Error(w, "Bad Gateway", http.StatusBadGateway)
 				},
 			},
@@ -588,14 +847,14 @@ func wrapHandler(h http.HandlerFunc) http.HandlerFunc {
 
 func serveStatic(cache *fileCache, cfg config, proxies []proxyHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" {
+		if r.URL.Path == cfg.healthPath {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprint(w, `{"status":"ok"}`)
 			return
 		}
 
-		if r.URL.Path == "/headers" && cfg.showHeaders {
+		if r.URL.Path == cfg.headersPath && cfg.showHeaders {
 			headers := make(map[string]string)
 			keys := make([]string, 0, len(r.Header))
 			for k := range r.Header {
@@ -667,13 +926,13 @@ func main() {
 		log.Printf("Cache max size: %d bytes, max file size: %d bytes", cache.maxSize, cache.maxFileSize)
 	}
 	for _, r := range cfg.proxyRoutes {
-		log.Printf("Proxy: %s -> %s (timeout: %s)", r.prefix, r.target, cfg.proxyTimeout)
+		log.Printf("Proxy: %s -> %s (timeout: %s)", routePrefix(r.prefix), r.target, cfg.proxyTimeout)
 	}
 
 	// Start HTTP server (only if port is configured)
 	if cfg.port != "" {
 		httpSrv := &http.Server{
-			Addr:         ":" + cfg.port,
+			Addr:         net.JoinHostPort(cfg.bindAddr, cfg.port),
 			Handler:      handler,
 			ReadTimeout:  15 * time.Second,
 			WriteTimeout: 15 * time.Second,
@@ -681,7 +940,7 @@ func main() {
 		}
 
 		go func() {
-			log.Printf("HTTP listening on %s", cfg.port)
+			log.Printf("HTTP listening on %s", httpSrv.Addr)
 			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("HTTP server error: %v", err)
 			}
@@ -689,13 +948,13 @@ func main() {
 	}
 
 	// Start HTTPS server
-	cert, err := loadOrGenerateTLS(cfg.tlsCertDir)
+	cert, err := loadOrGenerateTLS(cfg)
 	if err != nil {
 		log.Fatalf("TLS setup failed: %v", err)
 	}
 
 	tlsSrv := &http.Server{
-		Addr:    ":" + cfg.tlsPort,
+		Addr:    net.JoinHostPort(cfg.bindAddr, cfg.tlsPort),
 		Handler: handler,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
@@ -706,6 +965,6 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	log.Printf("HTTPS listening on %s", cfg.tlsPort)
+	log.Printf("HTTPS listening on %s", tlsSrv.Addr)
 	log.Fatal(tlsSrv.ListenAndServeTLS("", ""))
 }
