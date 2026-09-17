@@ -41,20 +41,23 @@ type proxyRoute struct {
 }
 
 type config struct {
-	bindAddr         string
-	onlyHTTPS        bool
-	port             string
-	tlsPort          string
-	tlsCertDir       string
-	spaMode          bool
-	showHeaders      bool
-	rootDir          string
-	cacheMaxSize     int64
-	cacheMaxFileSize int64
-	proxyRoutes      []proxyRoute
-	proxyTimeout     time.Duration
-	proxyCAFile      string
-	proxyInsecure    bool
+	bindAddr           string
+	onlyHTTPS          bool
+	port               string
+	tlsPort            string
+	tlsCertDir         string
+	tlsCertFile        string
+	tlsKeyFile         string
+	tlsSelfSignedHosts []string
+	spaMode            bool
+	showHeaders        bool
+	rootDir            string
+	cacheMaxSize       int64
+	cacheMaxFileSize   int64
+	proxyRoutes        []proxyRoute
+	proxyTimeout       time.Duration
+	proxyCAFile        string
+	proxyInsecure      bool
 }
 
 func flagOrEnvStr(flagVal string, envName string, def string) string {
@@ -126,6 +129,9 @@ func loadConfig() config {
 		fPort          string
 		fTlsPort       string
 		fTlsCertDir    string
+		fTlsCertFile   string
+		fTlsKeyFile    string
+		fTlsSSHosts    string
 		fSpa           bool
 		fShowHeaders   bool
 		fRootDir       string
@@ -142,7 +148,10 @@ func loadConfig() config {
 	flag.BoolVar(&fOnlyHTTPS, "only-https", false, "Never start the plain HTTP listener, even when a port is set (env: ONLY_HTTPS)")
 	flag.StringVar(&fPort, "port", "", "HTTP listening port (env: PORT, disabled if not set)")
 	flag.StringVar(&fTlsPort, "tls-port", "", "HTTPS listening port (env: TLS_PORT, default: 8443)")
-	flag.StringVar(&fTlsCertDir, "tls-cert-dir", "", "TLS certificate directory (env: TLS_CERT_DIR, default: /certs)")
+	flag.StringVar(&fTlsCertDir, "tls-cert-dir", "", "TLS certificate directory (env: TLS_CERT_DIR, default: /certs as root, ~/.static-httpserver/certs otherwise)")
+	flag.StringVar(&fTlsCertFile, "tls-cert-file", "", "TLS certificate file, overrides --tls-cert-dir (env: TLS_CERT_FILE)")
+	flag.StringVar(&fTlsKeyFile, "tls-key-file", "", "TLS private key file, overrides --tls-cert-dir (env: TLS_KEY_FILE)")
+	flag.StringVar(&fTlsSSHosts, "tls-selfsigned-hosts", "", "Extra hostnames/IPs for the generated self-signed certificate, comma-separated (env: TLS_SELFSIGNED_HOSTS)")
 	flag.BoolVar(&fSpa, "spa", false, "Enable SPA mode (env: SPA_MODE)")
 	flag.BoolVar(&fShowHeaders, "show-headers", false, "Show request headers on parking page (env: SHOW_HEADERS)")
 	flag.StringVar(&fRootDir, "root-dir", "", "Root directory for static files (env: ROOT_DIR, required)")
@@ -203,6 +212,13 @@ func loadConfig() config {
 		os.Exit(1)
 	}
 
+	tlsCertFile := flagOrEnvStr(fTlsCertFile, "TLS_CERT_FILE", "")
+	tlsKeyFile := flagOrEnvStr(fTlsKeyFile, "TLS_KEY_FILE", "")
+	if (tlsCertFile == "") != (tlsKeyFile == "") {
+		fmt.Fprintln(os.Stderr, "Error: --tls-cert-file and --tls-key-file must be used together")
+		os.Exit(1)
+	}
+
 	proxyCAFile := flagOrEnvStr(fProxyCA, "PROXY_CA_FILE", "")
 	proxyInsecure := flagOrEnvBool(fProxyInsecure, "PROXY_INSECURE")
 	if proxyCAFile != "" && proxyInsecure {
@@ -211,26 +227,36 @@ func loadConfig() config {
 	}
 
 	return config{
-		bindAddr:         bindAddr,
-		onlyHTTPS:        onlyHTTPS,
-		port:             httpPort,
-		tlsPort:          flagOrEnvStr(fTlsPort, "TLS_PORT", "8443"),
-		tlsCertDir:       flagOrEnvStr(fTlsCertDir, "TLS_CERT_DIR", "/certs"),
-		spaMode:          flagOrEnvBool(fSpa, "SPA_MODE"),
-		showHeaders:      flagOrEnvBool(fShowHeaders, "SHOW_HEADERS"),
-		rootDir:          rootDir,
-		cacheMaxSize:     flagOrEnvInt64(fCacheMax, "CACHE_MAX_SIZE", 50000000),
-		cacheMaxFileSize: flagOrEnvInt64(fCacheMaxFile, "CACHE_MAX_FILE_SIZE", 5000000),
-		proxyRoutes:      routes,
-		proxyTimeout:     time.Duration(timeout) * time.Second,
-		proxyCAFile:      proxyCAFile,
-		proxyInsecure:    proxyInsecure,
+		bindAddr:           bindAddr,
+		onlyHTTPS:          onlyHTTPS,
+		port:               httpPort,
+		tlsPort:            flagOrEnvStr(fTlsPort, "TLS_PORT", "8443"),
+		tlsCertDir:         flagOrEnvStr(fTlsCertDir, "TLS_CERT_DIR", defaultCertDir()),
+		tlsCertFile:        tlsCertFile,
+		tlsKeyFile:         tlsKeyFile,
+		tlsSelfSignedHosts: splitList(flagOrEnvStr(fTlsSSHosts, "TLS_SELFSIGNED_HOSTS", "")),
+		spaMode:            flagOrEnvBool(fSpa, "SPA_MODE"),
+		showHeaders:        flagOrEnvBool(fShowHeaders, "SHOW_HEADERS"),
+		rootDir:            rootDir,
+		cacheMaxSize:       flagOrEnvInt64(fCacheMax, "CACHE_MAX_SIZE", 50000000),
+		cacheMaxFileSize:   flagOrEnvInt64(fCacheMaxFile, "CACHE_MAX_FILE_SIZE", 5000000),
+		proxyRoutes:        routes,
+		proxyTimeout:       time.Duration(timeout) * time.Second,
+		proxyCAFile:        proxyCAFile,
+		proxyInsecure:      proxyInsecure,
 	}
 }
 
 func parseBool(s string) bool {
 	s = strings.ToLower(strings.TrimSpace(s))
 	return s == "true" || s == "1" || s == "yes"
+}
+
+func splitList(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
 }
 
 func parseInt64(s string) int64 {
@@ -243,63 +269,224 @@ func parseInt64(s string) int64 {
 
 // --- TLS ---
 
-func loadOrGenerateTLS(certDir string) (tls.Certificate, error) {
+// defaultCertDir keeps certificates in /certs for root (the container case) and in
+// the user's own directory otherwise, where an unprivileged process can write them.
+func defaultCertDir() string {
+	if os.Geteuid() == 0 {
+		return "/certs"
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".static-httpserver", "certs")
+	}
+	return "/certs"
+}
+
+// A persisted self-signed certificate is renewed once it gets this close to expiring.
+var selfSignedRenewBefore = 30 * 24 * time.Hour
+
+func selfSignedPaths(certDir string) (string, string) {
+	return filepath.Join(certDir, "selfsigned-cert.pem"), filepath.Join(certDir, "selfsigned-key.pem")
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// bindHosts returns the addresses the certificate needs to cover for clients to
+// reach the server by IP. A wildcard bind listens on every interface, so every
+// routable address of the machine is a valid way in.
+func bindHosts(bindAddr string) []string {
+	ip := net.ParseIP(bindAddr)
+	if ip != nil && !ip.IsUnspecified() {
+		return []string{ip.String()}
+	}
+
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		log.Printf("TLS could not list interface addresses: %v", err)
+		return nil
+	}
+
+	var hosts []string
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok || ipNet.IP.IsLoopback() || ipNet.IP.IsLinkLocalUnicast() {
+			continue
+		}
+		hosts = append(hosts, ipNet.IP.String())
+	}
+	return hosts
+}
+
+// selfSignedHosts returns the names the generated certificate must be valid for:
+// the well-known local names, the addresses the server listens on, and whatever
+// the user asked for.
+func selfSignedHosts(bindAddr string, extra []string) []string {
+	hosts := []string{"localhost", "127.0.0.1", "::1"}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		hosts = append(hosts, h)
+	}
+	hosts = append(hosts, bindHosts(bindAddr)...)
+	hosts = append(hosts, extra...)
+
+	seen := make(map[string]bool, len(hosts))
+	unique := hosts[:0]
+	for _, h := range hosts {
+		h = strings.TrimSpace(h)
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		unique = append(unique, h)
+	}
+	return unique
+}
+
+func loadOrGenerateTLS(cfg config) (tls.Certificate, error) {
+	// An explicit pair is a deliberate choice: fail loudly instead of quietly
+	// falling back to a self-signed certificate.
+	if cfg.tlsCertFile != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.tlsCertFile, cfg.tlsKeyFile)
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("loading certificate %s and key %s: %w", cfg.tlsCertFile, cfg.tlsKeyFile, err)
+		}
+		log.Printf("TLS using certificate %s", cfg.tlsCertFile)
+		return cert, nil
+	}
+
+	certDir := cfg.tlsCertDir
 	certFile := filepath.Join(certDir, "cert.pem")
 	keyFile := filepath.Join(certDir, "key.pem")
 
-	if _, err := os.Stat(certFile); err == nil {
-		if _, err := os.Stat(keyFile); err == nil {
-			cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-			if err != nil {
-				return tls.Certificate{}, fmt.Errorf("loading certificates from %s: %w", certDir, err)
-			}
-			log.Printf("TLS using certificates from %s", certDir)
-			return cert, nil
+	if fileExists(certFile) && fileExists(keyFile) {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("loading certificates from %s: %w", certDir, err)
+		}
+		log.Printf("TLS using certificates from %s", certDir)
+		return cert, nil
+	}
+
+	hosts := selfSignedHosts(cfg.bindAddr, cfg.tlsSelfSignedHosts)
+
+	cert, err := loadSelfSignedCert(certDir, hosts)
+	if err == nil {
+		log.Printf("TLS reusing self-signed certificate from %s (valid until %s)",
+			certDir, cert.Leaf.NotAfter.Format(time.RFC3339))
+		return cert, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		log.Printf("TLS regenerating self-signed certificate: %v", err)
+	}
+
+	certPEM, keyPEM, err := generateSelfSignedCert(hosts)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+
+	if err := saveSelfSignedCert(certDir, certPEM, keyPEM); err != nil {
+		log.Printf("TLS self-signed certificate kept in memory, not persisted: %v", err)
+	} else {
+		log.Printf("TLS self-signed certificate saved to %s", certDir)
+	}
+	log.Printf("TLS using self-signed certificate for %s", strings.Join(hosts, ", "))
+
+	return tls.X509KeyPair(certPEM, keyPEM)
+}
+
+// loadSelfSignedCert returns the previously generated certificate when it is still
+// usable. It reports os.ErrNotExist when there is nothing saved yet; any other error
+// describes why the saved pair has to be replaced.
+func loadSelfSignedCert(certDir string, hosts []string) (tls.Certificate, error) {
+	certFile, keyFile := selfSignedPaths(certDir)
+	if !fileExists(certFile) || !fileExists(keyFile) {
+		return tls.Certificate{}, os.ErrNotExist
+	}
+
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("saved pair is unusable: %w", err)
+	}
+
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("saved certificate is unreadable: %w", err)
+	}
+
+	if time.Now().Add(selfSignedRenewBefore).After(leaf.NotAfter) {
+		return tls.Certificate{}, fmt.Errorf("saved certificate expires at %s", leaf.NotAfter.Format(time.RFC3339))
+	}
+
+	for _, h := range hosts {
+		if err := leaf.VerifyHostname(h); err != nil {
+			return tls.Certificate{}, fmt.Errorf("saved certificate is not valid for %q", h)
 		}
 	}
 
-	log.Printf("TLS using self-signed certificate")
-	return generateSelfSignedCert()
+	cert.Leaf = leaf
+	return cert, nil
 }
 
-func generateSelfSignedCert() (tls.Certificate, error) {
+func saveSelfSignedCert(certDir string, certPEM, keyPEM []byte) error {
+	if err := os.MkdirAll(certDir, 0o700); err != nil {
+		return err
+	}
+	certFile, keyFile := selfSignedPaths(certDir)
+	if err := os.WriteFile(keyFile, keyPEM, 0o600); err != nil {
+		return err
+	}
+	return os.WriteFile(certFile, certPEM, 0o644)
+}
+
+func generateSelfSignedCert(hosts []string) (certPEM []byte, keyPEM []byte, err error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("generating private key: %w", err)
+		return nil, nil, fmt.Errorf("generating private key: %w", err)
 	}
 
 	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("generating serial number: %w", err)
+		return nil, nil, fmt.Errorf("generating serial number: %w", err)
 	}
 
 	tmpl := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
 			Organization: []string{"Static HTTP Server"},
-			CommonName:   "localhost",
+			CommonName:   hosts[0],
 		},
-		NotBefore:             time.Now(),
+		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 	}
 
-	certDER, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("creating certificate: %w", err)
+	// Clients have required the SubjectAltName extension for years; a certificate
+	// with only a CommonName fails hostname verification even when it is trusted.
+	for _, h := range hosts {
+		if ip := net.ParseIP(h); ip != nil {
+			tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
+		} else {
+			tmpl.DNSNames = append(tmpl.DNSNames, h)
+		}
 	}
 
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	certDER, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating certificate: %w", err)
+	}
 
 	keyDER, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("marshaling private key: %w", err)
+		return nil, nil, fmt.Errorf("marshaling private key: %w", err)
 	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 
-	return tls.X509KeyPair(certPEM, keyPEM)
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	return certPEM, keyPEM, nil
 }
 
 // --- Template Variables ---
@@ -711,7 +898,7 @@ func main() {
 	}
 
 	// Start HTTPS server
-	cert, err := loadOrGenerateTLS(cfg.tlsCertDir)
+	cert, err := loadOrGenerateTLS(cfg)
 	if err != nil {
 		log.Fatalf("TLS setup failed: %v", err)
 	}

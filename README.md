@@ -11,7 +11,7 @@ A really minimal HTTP/HTTPS Server image for static files written in Go.
 ## Why?
 
 * Create a simple HTML website
-* Serve static files with HTTP and HTTPS (self-signed certificate by default)
+* Serve static files with HTTP and HTTPS (self-signed certificate generated and reused automatically)
 * SPA (Single Page Application) support for frontend frameworks like React, Angular, Vue
 * In-memory LRU file cache with configurable limits
 * Health check endpoint for Kubernetes probes
@@ -33,7 +33,7 @@ customized by setting the environment variables:
 e.g.
 
 ```bash
-docker run -p 8080:8080 -e TITLE=soon -e "MESSAGE=Keep In Touch" byjg/static-httpserver
+docker run -p 8080:8080 -p 8443:8443 -e TITLE=soon -e "MESSAGE=Keep In Touch" byjg/static-httpserver
 ```
 
 ## Configuration
@@ -47,7 +47,10 @@ The server can be configured via CLI flags or environment variables. CLI flags t
 | `--only-https`     | `ONLY_HTTPS`          | `false`      | Never start the HTTP listener, even when a port is set                        |
 | `--port`           | `PORT`                | *(disabled)* | HTTP listening port. Not set = HTTP disabled                                  |
 | `--tls-port`       | `TLS_PORT`            | `8443`       | HTTPS listening port                                                          |
-| `--tls-cert-dir`   | `TLS_CERT_DIR`        | `/certs`     | Directory to look for `cert.pem` and `key.pem`                                |
+| `--tls-cert-dir`   | `TLS_CERT_DIR`        | *(see below)* | Directory to look for `cert.pem` and `key.pem`, and where the self-signed certificate is saved |
+| `--tls-cert-file`  | `TLS_CERT_FILE`       | *(none)*     | TLS certificate file — takes precedence over `--tls-cert-dir`                 |
+| `--tls-key-file`   | `TLS_KEY_FILE`        | *(none)*     | TLS private key file — must be used together with `--tls-cert-file`           |
+| `--tls-selfsigned-hosts` | `TLS_SELFSIGNED_HOSTS` | *(none)* | Extra hostnames/IPs the self-signed certificate must be valid for (comma-separated) |
 | `--spa`            | `SPA_MODE`            | `false`      | Enable SPA routing                                                            |
 | `--show-headers`   | `SHOW_HEADERS`        | `false`      | Display request headers on the parking page                                   |
 | `--cache-max-size` | `CACHE_MAX_SIZE`      | `50000000`   | Max total cache size in bytes (0 to disable)                                  |
@@ -58,16 +61,21 @@ The server can be configured via CLI flags or environment variables. CLI flags t
 | `--proxy-insecure` | `PROXY_INSECURE`      | `false`      | Skip TLS verification for proxy backends — use only on trusted networks       |
 | `--version`        |                       |              | Print version and exit                                                        |
 
-The Docker image sets `--root-dir /static` and `--port 8080` by default.
+`--tls-cert-dir` defaults to `/certs` when running as root and to `~/.static-httpserver/certs`
+otherwise, so an unprivileged process always has somewhere to keep its certificate.
+
+The Docker image sets `--root-dir /static`, `--port 8080` and `--tls-cert-dir /certs` by default.
 
 ### CLI Usage
 
 ```bash
-# Serve current directory on HTTPS only (port 8443)
+# Serve current directory over HTTPS (port 8443)
 static-httpserver --root-dir .
+curl -k https://localhost:8443/
 
-# Serve with both HTTP and HTTPS
+# Add plain HTTP on port 8080
 static-httpserver --root-dir /var/www/html --port 8080
+curl http://localhost:8080/
 
 # HTTPS only, ignoring any port set through PORT
 static-httpserver --root-dir /var/www/html --only-https
@@ -76,7 +84,7 @@ static-httpserver --root-dir /var/www/html --only-https
 static-httpserver --root-dir . --bind 127.0.0.1
 
 # SPA mode
-static-httpserver --root-dir ./dist --port 3000 --spa
+static-httpserver --root-dir ./dist --spa
 ```
 
 ### Install via deb/rpm
@@ -91,10 +99,75 @@ yum install static-httpserver
 
 ### HTTPS / TLS
 
-HTTPS is always enabled (default port 8443). By default, a **self-signed certificate** is generated
-in memory at startup.
+HTTPS is **always enabled** (default port 8443), so the minimal way to serve it is to just start
+the server:
 
-To use your own certificates, provide a directory with `cert.pem` and `key.pem`:
+```bash
+# CLI: https://localhost:8443
+static-httpserver --root-dir ./html
+
+# Docker: publish the HTTPS port and keep the certificate in a volume
+docker run -p 8443:8443 \
+    -v $(pwd)/html:/static:ro \
+    -v $(pwd)/certs:/certs \
+    byjg/static-httpserver
+```
+
+HTTP is **optional** — it only starts when `--port` or `PORT` is set. The Docker image sets
+`PORT=8080`, so it serves both by default. `--only-https` (or `ONLY_HTTPS=true`) turns the HTTP
+listener off even when a port is set, which is the way to get an HTTPS-only container:
+
+```bash
+static-httpserver --root-dir ./html --port 8080          # HTTP + HTTPS
+
+docker run -p 8443:8443 -e ONLY_HTTPS=true byjg/static-httpserver   # HTTPS only
+```
+
+Both listeners use `--bind` (default `0.0.0.0`, all interfaces). Use it to restrict the server to a
+single address, e.g. `--bind 127.0.0.1` for local-only access.
+
+#### Self-signed certificate (default)
+
+When `--tls-cert-dir` has no `cert.pem`/`key.pem`, the server generates a self-signed certificate
+valid for one year and saves it as `selfsigned-cert.pem` / `selfsigned-key.pem` **inside that same
+directory** — `/certs` as root, `~/.static-httpserver/certs` otherwise, created with `0700`. On the
+next start the saved certificate is reused, and it is only regenerated when it is expired (or within
+30 days of expiring) or when it does not cover all the requested hostnames.
+
+The Docker image runs as a non-root user (uid 1000) but pins `TLS_CERT_DIR=/certs` and ships that
+directory owned by it, so a named volume on `/certs` inherits the ownership and keeps the same
+certificate across container restarts. A **bind** mount takes its ownership from the host instead,
+so the host directory has to be writable by uid 1000. When the directory cannot be written at all
+(a read-only mount, or a path the process may not create), the certificate is simply kept in memory:
+the server still serves HTTPS, it just gets a new certificate on every start.
+
+The certificate covers `localhost`, `127.0.0.1`, `::1`, the machine hostname and the address the
+server listens on — when `--bind` is a specific IP, that IP; when it is the `0.0.0.0` default, every
+routable address of the machine, so `https://<lan-ip>:8443` verifies too. Note that a machine whose
+addresses change (a new Docker bridge, a new DHCP lease) no longer matches the saved certificate,
+which is then regenerated on the next start; `--bind <ip>` avoids that.
+
+`--tls-selfsigned-hosts` is optional and only needed for names the server cannot discover, such as a
+public DNS name:
+
+```bash
+static-httpserver --root-dir ./html --tls-selfsigned-hosts www.example.org,192.168.1.10
+```
+
+Because the certificate carries proper `SubjectAltName` entries, clients can be told to trust it
+instead of skipping verification:
+
+```bash
+# Quick and dirty: skip verification
+curl -k https://localhost:8443/health
+
+# Or trust the generated certificate
+curl --cacert ./certs/selfsigned-cert.pem https://localhost:8443/health
+```
+
+#### Your own certificates
+
+Provide a directory containing `cert.pem` and `key.pem`:
 
 ```bash
 # CLI
@@ -106,16 +179,20 @@ docker run -p 8080:8080 -p 8443:8443 \
     byjg/static-httpserver
 ```
 
-HTTP is **optional** — only started when `--port` or `PORT` is set. `--only-https` (or
-`ONLY_HTTPS=true`) turns the HTTP listener off even when a port is set, which is the way to get an
-HTTPS-only container: the image sets `PORT=8080` in its environment.
+When both files are present they always take precedence over the self-signed certificate.
+
+If your files are not named `cert.pem` and `key.pem` — Let's Encrypt, for instance, writes
+`fullchain.pem` and `privkey.pem` — point at them directly:
 
 ```bash
-docker run -p 8443:8443 -e ONLY_HTTPS=true byjg/static-httpserver
+static-httpserver --root-dir ./html \
+    --tls-port 443 \
+    --tls-cert-file /etc/letsencrypt/live/example.org/fullchain.pem \
+    --tls-key-file /etc/letsencrypt/live/example.org/privkey.pem
 ```
 
-Both listeners use `--bind` (default `0.0.0.0`, all interfaces). Use it to restrict the server to a
-single address, e.g. `--bind 127.0.0.1` for local-only access.
+Both flags must be given together. Unlike `--tls-cert-dir`, an unreadable file here is a fatal
+error: the server will **not** silently fall back to a self-signed certificate.
 
 ### SPA Mode
 
@@ -184,7 +261,8 @@ only specific OIDC/OAuth endpoints publicly, while keeping the rest of the API i
 static-httpserver \
     --root-dir /var/www/empty \
     --tls-port 443 \
-    --tls-cert-dir /etc/letsencrypt/live/nimbus.example.com \
+    --tls-cert-file /etc/letsencrypt/live/nimbus.example.com/fullchain.pem \
+    --tls-key-file /etc/letsencrypt/live/nimbus.example.com/privkey.pem \
     --proxy /.well-known/openid-configuration=https://10.106.103.1:8443/.well-known/openid-configuration \
     --proxy /keys=https://10.106.103.1:8443/keys \
     --proxy /authorize=https://10.106.103.1:8443/authorize \
