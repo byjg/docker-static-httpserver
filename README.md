@@ -269,6 +269,48 @@ catch-all route. It lives at `/_health` precisely so it does not collide with a 
 is taken as well. Everything else goes to the backend — routes are matched before the static file
 lookup — so point `--root-dir` at an empty directory when the backend owns the whole site.
 
+#### Local development: `npm run serve-https`
+
+[`examples/serve-https.sh`](examples/serve-https.sh) starts your app and puts static-httpserver in
+front of it, so a local app gets HTTPS without touching its code. Copy it into your project (say
+`scripts/serve-https.sh`) and wire it into `package.json`:
+
+```json
+{
+  "scripts": {
+    "serve": "node server.js",
+    "serve-https": "sh ./scripts/serve-https.sh"
+  }
+}
+```
+
+```bash
+npm run serve-https
+# https://localhost:8443 -> http://127.0.0.1:3000
+```
+
+The ports and the command are environment variables, so the same script works for any stack:
+
+```bash
+APP_CMD="npm run dev" APP_PORT=5173 npm run serve-https   # Vite
+```
+
+| Variable   | Default         | Meaning                                   |
+|------------|-----------------|-------------------------------------------|
+| `APP_CMD`  | `npm run serve` | Command that starts the app               |
+| `APP_PORT` | `3000`          | Port the app listens on                   |
+| `TLS_PORT` | `8443`          | Port to serve HTTPS on                    |
+| `CERT_DIR` | `.certs`        | Where the self-signed certificate is kept |
+| `ROOT_DIR` | `.static`       | Static files, if any                      |
+
+Ctrl-C stops both — the script forwards the signal to the app instead of leaving it orphaned. The
+certificate is kept in `CERT_DIR` and reused, so the browser exception you add survives restarts;
+add `.certs/` to `.gitignore`. Requests made before the app finishes booting get a 502 until it is
+listening.
+
+> For containers, run the app and static-httpserver as two containers (compose or a Kubernetes pod)
+> and point `--proxy /=http://app:3000` at the app, rather than starting both from one entrypoint.
+
 #### Proxy backend TLS
 
 When the backend uses HTTPS with a self-signed or private CA certificate, use `--proxy-ca` to provide
