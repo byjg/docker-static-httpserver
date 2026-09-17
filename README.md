@@ -271,9 +271,42 @@ lookup — so point `--root-dir` at an empty directory when the backend owns the
 
 #### Local development: `npm run serve-https`
 
-[`examples/serve-https.sh`](examples/serve-https.sh) starts your app and puts static-httpserver in
-front of it, so a local app gets HTTPS without touching its code. Copy it into your project (say
-`scripts/serve-https.sh`) and wire it into `package.json`:
+This script starts your app and puts static-httpserver in front of it, so a local app gets HTTPS
+without touching its code. Save it in your project as `scripts/serve-https.sh` (it is also in this
+repository as `examples/serve-https.sh`):
+
+```sh
+#!/bin/sh
+APP_CMD="${APP_CMD:-npm run serve}"      # command that starts the app
+APP_PORT="${APP_PORT:-3000}"             # port the app listens on
+TLS_PORT="${TLS_PORT:-8443}"             # port to serve HTTPS on
+CERT_DIR="${CERT_DIR:-.certs}"           # where the self-signed cert is kept
+ROOT_DIR="${ROOT_DIR:-.static}"          # static files, if any
+
+mkdir -p "$ROOT_DIR"
+
+$APP_CMD &
+APP=$!
+
+static-httpserver \
+    --root-dir "$ROOT_DIR" \
+    --only-https \
+    --tls-port "$TLS_PORT" \
+    --tls-cert-dir "$CERT_DIR" \
+    --proxy "/=http://127.0.0.1:$APP_PORT" &
+SRV=$!
+
+# Ctrl-C (or a stop signal) has to reach both, not just this script.
+trap 'kill -TERM $APP $SRV 2>/dev/null' TERM INT
+
+echo "https://localhost:$TLS_PORT -> http://127.0.0.1:$APP_PORT"
+
+wait $SRV
+kill -TERM $APP 2>/dev/null
+wait $APP 2>/dev/null
+```
+
+Then wire it into `package.json`:
 
 ```json
 {
