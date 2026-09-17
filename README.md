@@ -43,6 +43,8 @@ The server can be configured via CLI flags or environment variables. CLI flags t
 | CLI Flag           | Env Variable          | Default      | Description                                                                   |
 |--------------------|-----------------------|--------------|-------------------------------------------------------------------------------|
 | `--root-dir`       | `ROOT_DIR`            | *(required)* | Root directory for static files                                               |
+| `--bind`           | `BIND_ADDRESS`        | `0.0.0.0`    | IP address to listen on                                                       |
+| `--only-https`     | `ONLY_HTTPS`          | `false`      | Never start the HTTP listener, even when a port is set                        |
 | `--port`           | `PORT`                | *(disabled)* | HTTP listening port. Not set = HTTP disabled                                  |
 | `--tls-port`       | `TLS_PORT`            | `8443`       | HTTPS listening port                                                          |
 | `--tls-cert-dir`   | `TLS_CERT_DIR`        | `/certs`     | Directory to look for `cert.pem` and `key.pem`                                |
@@ -66,6 +68,12 @@ static-httpserver --root-dir .
 
 # Serve with both HTTP and HTTPS
 static-httpserver --root-dir /var/www/html --port 8080
+
+# HTTPS only, ignoring any port set through PORT
+static-httpserver --root-dir /var/www/html --only-https
+
+# Listen on one address only
+static-httpserver --root-dir . --bind 127.0.0.1
 
 # SPA mode
 static-httpserver --root-dir ./dist --port 3000 --spa
@@ -98,7 +106,16 @@ docker run -p 8080:8080 -p 8443:8443 \
     byjg/static-httpserver
 ```
 
-HTTP is **optional** — only started when `--port` or `PORT` is set.
+HTTP is **optional** — only started when `--port` or `PORT` is set. `--only-https` (or
+`ONLY_HTTPS=true`) turns the HTTP listener off even when a port is set, which is the way to get an
+HTTPS-only container: the image sets `PORT=8080` in its environment.
+
+```bash
+docker run -p 8443:8443 -e ONLY_HTTPS=true byjg/static-httpserver
+```
+
+Both listeners use `--bind` (default `0.0.0.0`, all interfaces). Use it to restrict the server to a
+single address, e.g. `--bind 127.0.0.1` for local-only access.
 
 ### SPA Mode
 

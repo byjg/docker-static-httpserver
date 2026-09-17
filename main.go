@@ -17,6 +17,7 @@ import (
 	"log"
 	"math/big"
 	"mime"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -40,6 +41,8 @@ type proxyRoute struct {
 }
 
 type config struct {
+	bindAddr         string
+	onlyHTTPS        bool
 	port             string
 	tlsPort          string
 	tlsCertDir       string
@@ -118,6 +121,8 @@ func (p *proxyFlags) Set(val string) error {
 
 func loadConfig() config {
 	var (
+		fBind          string
+		fOnlyHTTPS     bool
 		fPort          string
 		fTlsPort       string
 		fTlsCertDir    string
@@ -133,6 +138,8 @@ func loadConfig() config {
 		fProxyInsecure bool
 	)
 
+	flag.StringVar(&fBind, "bind", "", "IP address to listen on (env: BIND_ADDRESS, default: 0.0.0.0)")
+	flag.BoolVar(&fOnlyHTTPS, "only-https", false, "Never start the plain HTTP listener, even when a port is set (env: ONLY_HTTPS)")
 	flag.StringVar(&fPort, "port", "", "HTTP listening port (env: PORT, disabled if not set)")
 	flag.StringVar(&fTlsPort, "tls-port", "", "HTTPS listening port (env: TLS_PORT, default: 8443)")
 	flag.StringVar(&fTlsCertDir, "tls-cert-dir", "", "TLS certificate directory (env: TLS_CERT_DIR, default: /certs)")
@@ -183,6 +190,19 @@ func loadConfig() config {
 		}
 	}
 
+	onlyHTTPS := flagOrEnvBool(fOnlyHTTPS, "ONLY_HTTPS")
+	httpPort := flagOrEnvStr(fPort, "PORT", "")
+	if onlyHTTPS && httpPort != "" {
+		log.Printf("HTTP port %s ignored: --only-https (env: ONLY_HTTPS) is set", httpPort)
+		httpPort = ""
+	}
+
+	bindAddr := flagOrEnvStr(fBind, "BIND_ADDRESS", "0.0.0.0")
+	if net.ParseIP(bindAddr) == nil {
+		fmt.Fprintf(os.Stderr, "Error: invalid --bind address %q: expected an IP address\n", bindAddr)
+		os.Exit(1)
+	}
+
 	proxyCAFile := flagOrEnvStr(fProxyCA, "PROXY_CA_FILE", "")
 	proxyInsecure := flagOrEnvBool(fProxyInsecure, "PROXY_INSECURE")
 	if proxyCAFile != "" && proxyInsecure {
@@ -191,7 +211,9 @@ func loadConfig() config {
 	}
 
 	return config{
-		port:             flagOrEnvStr(fPort, "PORT", ""),
+		bindAddr:         bindAddr,
+		onlyHTTPS:        onlyHTTPS,
+		port:             httpPort,
 		tlsPort:          flagOrEnvStr(fTlsPort, "TLS_PORT", "8443"),
 		tlsCertDir:       flagOrEnvStr(fTlsCertDir, "TLS_CERT_DIR", "/certs"),
 		spaMode:          flagOrEnvBool(fSpa, "SPA_MODE"),
@@ -673,7 +695,7 @@ func main() {
 	// Start HTTP server (only if port is configured)
 	if cfg.port != "" {
 		httpSrv := &http.Server{
-			Addr:         ":" + cfg.port,
+			Addr:         net.JoinHostPort(cfg.bindAddr, cfg.port),
 			Handler:      handler,
 			ReadTimeout:  15 * time.Second,
 			WriteTimeout: 15 * time.Second,
@@ -681,7 +703,7 @@ func main() {
 		}
 
 		go func() {
-			log.Printf("HTTP listening on %s", cfg.port)
+			log.Printf("HTTP listening on %s", httpSrv.Addr)
 			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("HTTP server error: %v", err)
 			}
@@ -695,7 +717,7 @@ func main() {
 	}
 
 	tlsSrv := &http.Server{
-		Addr:    ":" + cfg.tlsPort,
+		Addr:    net.JoinHostPort(cfg.bindAddr, cfg.tlsPort),
 		Handler: handler,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
@@ -706,6 +728,6 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	log.Printf("HTTPS listening on %s", cfg.tlsPort)
+	log.Printf("HTTPS listening on %s", tlsSrv.Addr)
 	log.Fatal(tlsSrv.ListenAndServeTLS("", ""))
 }
