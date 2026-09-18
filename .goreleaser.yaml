@@ -39,11 +39,9 @@ checksum:
   name_template: "checksums.txt"
 
 changelog:
-  sort: asc
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
+  # Let GitHub generate the notes from the merged pull requests, the same list
+  # the release page offers, instead of a flat commit dump.
+  use: github-native
 
 release:
   github:
