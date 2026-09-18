@@ -2,7 +2,10 @@ FROM docker.io/golang:1.26 AS builder
 RUN apt-get update && apt-get install -y make && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY go.mod main.go Makefile ./
-RUN make build
+# The build context has no .git, so the Makefile's git describe finds nothing;
+# the version has to be passed in.
+ARG VERSION=dev
+RUN make build VERSION=$VERSION
 
 FROM alpine:3.23
 RUN apk --no-cache add ca-certificates

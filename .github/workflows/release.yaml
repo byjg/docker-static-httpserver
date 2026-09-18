@@ -20,6 +20,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Before any artifact is produced: the tag has to agree with the chart.
+      - name: Check chart and app versions
+        run: ./scripts/check-version.sh tag "${{ github.ref_name }}"
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
