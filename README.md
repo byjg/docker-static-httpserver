@@ -91,6 +91,8 @@ static-httpserver --root-dir ./dist --spa
 
 ### Install via deb/rpm
 
+Add the [ByJG package repository](https://opensource.byjg.com/docs/packages), then:
+
 ```bash
 # Debian/Ubuntu
 apt install static-httpserver
@@ -98,6 +100,16 @@ apt install static-httpserver
 # RHEL/CentOS
 yum install static-httpserver
 ```
+
+### Install via Homebrew
+
+On macOS (or Linux) with [Homebrew](https://brew.sh):
+
+```bash
+brew install byjg/tap/static-httpserver
+```
+
+Homebrew builds it from source, installing Go only for the build.
 
 ### HTTPS / TLS
 
