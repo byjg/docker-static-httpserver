@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -571,6 +572,124 @@ func TestHeadersEndpointNeedsShowHeaders(t *testing.T) {
 	handler(w, httptest.NewRequest(http.MethodGet, "/_headers", nil))
 	if w.Code != http.StatusNotFound {
 		t.Errorf("/_headers returned %d without --show-headers, want 404", w.Code)
+	}
+}
+
+func TestHeadersEndpointIncludesHost(t *testing.T) {
+	cfg := config{
+		rootDir:          t.TempDir(),
+		cacheMaxSize:     1000,
+		cacheMaxFileSize: 1000,
+		healthPath:       "/_health",
+		headersPath:      "/_headers",
+		showHeaders:      true,
+	}
+	handler := serveStatic(newFileCache(cfg), cfg, nil)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_headers", nil)
+	req.Host = "example.org:31080"
+	req.Header.Set("X-Test", "value")
+	handler(w, req)
+
+	var headers map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &headers); err != nil {
+		t.Fatalf("/_headers returned %q, want JSON: %v", w.Body.String(), err)
+	}
+	if headers["Host"] != "example.org:31080" {
+		t.Errorf("Host = %q, want example.org:31080", headers["Host"])
+	}
+	if headers["X-Test"] != "value" {
+		t.Errorf("X-Test = %q, want value", headers["X-Test"])
+	}
+}
+
+func echoConfig() config {
+	return config{
+		echoMode:    true,
+		serverName:  "web-80",
+		healthPath:  "/_health",
+		headersPath: "/_headers",
+	}
+}
+
+func TestEchoDescribesTheRequest(t *testing.T) {
+	cfg := echoConfig()
+	handler := serveStatic(newFileCache(cfg), cfg, nil)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "https://example.org:31443/some/path?a=1", nil)
+	req.Header.Set("X-Forwarded-For", "10.0.0.1")
+	handler(w, req)
+
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var got echoResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("echo returned %q, want JSON: %v", w.Body.String(), err)
+	}
+	hostname, _ := os.Hostname()
+	if got.Name != "web-80" || got.Hostname != hostname {
+		t.Errorf("name/hostname = %q/%q, want web-80/%q", got.Name, got.Hostname, hostname)
+	}
+	if got.Method != http.MethodPost || got.URI != "/some/path?a=1" {
+		t.Errorf("method/uri = %q/%q, want POST and /some/path?a=1", got.Method, got.URI)
+	}
+	if got.Host != "example.org:31443" || got.Headers["Host"] != "example.org:31443" {
+		t.Errorf("host = %q, headers[Host] = %q, want example.org:31443", got.Host, got.Headers["Host"])
+	}
+	if !got.TLS {
+		t.Errorf("tls = false, want true for an HTTPS request")
+	}
+	if got.RemoteAddr == "" {
+		t.Errorf("remote_addr is empty")
+	}
+	if got.Headers["X-Forwarded-For"] != "10.0.0.1" {
+		t.Errorf("headers[X-Forwarded-For] = %q, want 10.0.0.1", got.Headers["X-Forwarded-For"])
+	}
+}
+
+func TestEchoAnswersEveryPathButHealth(t *testing.T) {
+	cfg := echoConfig()
+	handler := serveStatic(newFileCache(cfg), cfg, nil)
+
+	w := httptest.NewRecorder()
+	handler(w, httptest.NewRequest(http.MethodGet, "/_health", nil))
+	if body := w.Body.String(); body != `{"status":"ok"}` {
+		t.Errorf("/_health returned %q, want the health response", body)
+	}
+
+	for _, path := range []string{"/", "/index.html", "/missing/file.css", "/_headers"} {
+		w := httptest.NewRecorder()
+		handler(w, httptest.NewRequest(http.MethodGet, path, nil))
+		var got echoResponse
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.URI != path {
+			t.Errorf("%s returned %d %q, want the echo of %s", path, w.Code, w.Body.String(), path)
+		}
+	}
+}
+
+func TestValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     config
+		wantErr string
+	}{
+		{"files need a root dir", config{}, "--root-dir"},
+		{"files with a root dir", config{rootDir: "/static"}, ""},
+		{"echo needs no root dir", config{echoMode: true}, ""},
+		{"echo with proxy", config{echoMode: true, proxyRoutes: []proxyRoute{{prefix: "/api"}}}, "--proxy"},
+		{"echo with spa", config{echoMode: true, spaMode: true}, "--spa"},
+	}
+	for _, tt := range tests {
+		err := tt.cfg.validate()
+		if tt.wantErr == "" && err != nil {
+			t.Errorf("%s: unexpected error %v", tt.name, err)
+		}
+		if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+			t.Errorf("%s: error %v, want one mentioning %s", tt.name, err, tt.wantErr)
+		}
 	}
 }
 

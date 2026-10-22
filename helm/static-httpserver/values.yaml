@@ -47,6 +47,8 @@ parameters:
   youtube: ""
   spaMode: ""
   showHeaders: ""
+  echoMode: ""
+  serverName: ""
   healthPath: ""
   port: ""
   tlsPort: ""
