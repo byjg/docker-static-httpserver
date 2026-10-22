@@ -17,6 +17,7 @@ A really minimal HTTP/HTTPS Server image for static files written in Go.
 * Reverse proxy by path prefix, including TLS termination for a backend that only speaks HTTP
 * In-memory LRU file cache with configurable limits
 * Health check endpoint for Kubernetes probes
+* Echo mode that answers every request with what reached the server, for testing proxies and load balancers
 * Really small footprint
 
 ## Quick start
@@ -142,7 +143,7 @@ The server can be configured via CLI flags or environment variables. CLI flags t
 
 | CLI Flag           | Env Variable          | Default      | Description                                                                   |
 |--------------------|-----------------------|--------------|-------------------------------------------------------------------------------|
-| `--root-dir`       | `ROOT_DIR`            | *(required)* | Root directory for static files                                               |
+| `--root-dir`       | `ROOT_DIR`            | *(required)* | Root directory for static files. Not needed with `--echo`                     |
 | `--bind`           | `BIND_ADDRESS`        | `0.0.0.0`    | IP address to listen on                                                       |
 | `--only-https`     | `ONLY_HTTPS`          | `false`      | Never start the HTTP listener, even when a port is set                        |
 | `--port`           | `PORT`                | *(disabled)* | HTTP listening port. Not set = HTTP disabled                                  |
@@ -155,6 +156,8 @@ The server can be configured via CLI flags or environment variables. CLI flags t
 | `--show-headers`   | `SHOW_HEADERS`        | `false`      | Display request headers on the parking page                                   |
 | `--health-path`    | `HEALTH_PATH`         | `/_health`   | Path of the health endpoint                                                   |
 | `--headers-path`   | `HEADERS_PATH`        | `/_headers`  | Path of the request headers endpoint (needs `--show-headers`)                 |
+| `--echo`           | `ECHO_MODE`           | `false`      | Answer every request with a JSON description of it instead of serving files   |
+| `--name`           | `SERVER_NAME`         | *(hostname)* | Name reported by `--echo`, to tell instances apart                            |
 | `--cache-max-size` | `CACHE_MAX_SIZE`      | `50000000`   | Max total cache size in bytes (0 to disable)                                  |
 | `--cache-max-file` | `CACHE_MAX_FILE_SIZE` | `5000000`    | Max individual file size to cache in bytes                                    |
 | `--proxy`          | `PROXY_ROUTES`        | *(none)*     | Proxy route as `/prefix=http://target`, `/` proxies everything (repeatable flag, comma-separated env) |
@@ -231,6 +234,27 @@ static-httpserver \
 See [Reverse Proxy](docs/reverse-proxy.md) for the forwarded headers, the catch-all `/` route, a
 `npm run serve-https` script for local development, backend TLS verification and a hardened OIDC
 example.
+
+## Echo Mode
+
+`--echo` (env `ECHO_MODE`) turns the server into a test backend: every path answers `200` with a JSON
+description of the request as it reached the server. Use it to check what a proxy or load balancer
+forwards, or which instance answered. No files are served, so `--root-dir` is not needed, and
+`--proxy` and `--spa` are refused. The health endpoint keeps working.
+
+```bash
+docker run -p 8080:8080 -e ECHO_MODE=true -e SERVER_NAME=web-1 byjg/static-httpserver
+curl -H "Host: example.org:31080" "localhost:8080/some/path?a=1"
+```
+
+```json
+{"name":"web-1","hostname":"c122aebc2892","method":"GET","uri":"/some/path?a=1",
+ "host":"example.org:31080","proto":"HTTP/1.1","tls":false,"remote_addr":"172.17.0.1:52662",
+ "headers":{"Accept":"*/*","Host":"example.org:31080","User-Agent":"curl/8.5.0"}}
+```
+
+`name` comes from `--name` (env `SERVER_NAME`) and defaults to the hostname, which in a container is
+the container ID.
 
 ## Health Check
 

@@ -86,6 +86,14 @@ spec:
             - name: SHOW_HEADERS
               value: {{ .Values.parameters.showHeaders | quote }}
             {{- end }}
+            {{- if .Values.parameters.echoMode }}
+            - name: ECHO_MODE
+              value: {{ .Values.parameters.echoMode | quote }}
+            {{- end }}
+            {{- if .Values.parameters.serverName }}
+            - name: SERVER_NAME
+              value: {{ .Values.parameters.serverName | quote }}
+            {{- end }}
             {{- if .Values.parameters.healthPath }}
             - name: HEALTH_PATH
               value: {{ .Values.parameters.healthPath | quote }}

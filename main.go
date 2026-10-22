@@ -53,6 +53,8 @@ type config struct {
 	headersPath        string
 	spaMode            bool
 	showHeaders        bool
+	echoMode           bool
+	serverName         string
 	rootDir            string
 	cacheMaxSize       int64
 	cacheMaxFileSize   int64
@@ -155,6 +157,8 @@ func loadConfig() config {
 		fHeadersPath   string
 		fSpa           bool
 		fShowHeaders   bool
+		fEcho          bool
+		fName          string
 		fRootDir       string
 		fCacheMax      int64
 		fCacheMaxFile  int64
@@ -177,7 +181,9 @@ func loadConfig() config {
 	flag.StringVar(&fHeadersPath, "headers-path", "", "Path of the request headers endpoint (env: HEADERS_PATH, default: /_headers)")
 	flag.BoolVar(&fSpa, "spa", false, "Enable SPA mode (env: SPA_MODE)")
 	flag.BoolVar(&fShowHeaders, "show-headers", false, "Show request headers on parking page (env: SHOW_HEADERS)")
-	flag.StringVar(&fRootDir, "root-dir", "", "Root directory for static files (env: ROOT_DIR, required)")
+	flag.BoolVar(&fEcho, "echo", false, "Answer every request with a JSON description of it instead of serving files (env: ECHO_MODE)")
+	flag.StringVar(&fName, "name", "", "Name reported by --echo, to tell instances apart (env: SERVER_NAME, default: hostname)")
+	flag.StringVar(&fRootDir, "root-dir", "", "Root directory for static files (env: ROOT_DIR, required unless --echo)")
 	flag.Int64Var(&fCacheMax, "cache-max-size", -1, "Max cache size in bytes, 0 to disable (env: CACHE_MAX_SIZE, default: 50000000)")
 	flag.Int64Var(&fCacheMaxFile, "cache-max-file", -1, "Max file size to cache in bytes (env: CACHE_MAX_FILE_SIZE, default: 5000000)")
 	flag.BoolVar(&fVersion, "version", false, "Print version and exit")
@@ -190,13 +196,6 @@ func loadConfig() config {
 	if fVersion {
 		fmt.Printf("static-httpserver %s\n", version)
 		os.Exit(0)
-	}
-
-	rootDir := flagOrEnvStr(fRootDir, "ROOT_DIR", "")
-	if rootDir == "" {
-		fmt.Fprintln(os.Stderr, "Error: --root-dir flag or ROOT_DIR environment variable is required")
-		flag.Usage()
-		os.Exit(1)
 	}
 
 	// Parse proxy routes from flags or env
@@ -258,7 +257,7 @@ func loadConfig() config {
 		proxyInsecure = false
 	}
 
-	return config{
+	cfg := config{
 		bindAddr:           bindAddr,
 		onlyHTTPS:          onlyHTTPS,
 		port:               httpPort,
@@ -271,7 +270,9 @@ func loadConfig() config {
 		headersPath:        headersPath,
 		spaMode:            flagOrEnvBool(fSpa, "SPA_MODE"),
 		showHeaders:        flagOrEnvBool(fShowHeaders, "SHOW_HEADERS"),
-		rootDir:            rootDir,
+		echoMode:           flagOrEnvBool(fEcho, "ECHO_MODE"),
+		serverName:         flagOrEnvStr(fName, "SERVER_NAME", defaultServerName()),
+		rootDir:            flagOrEnvStr(fRootDir, "ROOT_DIR", ""),
 		cacheMaxSize:       flagOrEnvInt64(fCacheMax, "CACHE_MAX_SIZE", 50000000),
 		cacheMaxFileSize:   flagOrEnvInt64(fCacheMaxFile, "CACHE_MAX_FILE_SIZE", 5000000),
 		proxyRoutes:        routes,
@@ -279,6 +280,37 @@ func loadConfig() config {
 		proxyCAFile:        proxyCAFile,
 		proxyInsecure:      proxyInsecure,
 	}
+	if err := cfg.validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		flag.Usage()
+		os.Exit(1)
+	}
+	return cfg
+}
+
+// validate checks the options that depend on each other.
+func (cfg config) validate() error {
+	if cfg.echoMode {
+		// Echo mode answers every path itself, so there is nothing for these to serve.
+		if len(cfg.proxyRoutes) > 0 {
+			return errors.New("--echo cannot be used with --proxy")
+		}
+		if cfg.spaMode {
+			return errors.New("--echo cannot be used with --spa")
+		}
+		return nil
+	}
+	if cfg.rootDir == "" {
+		return errors.New("--root-dir flag or ROOT_DIR environment variable is required")
+	}
+	return nil
+}
+
+func defaultServerName() string {
+	if h, err := os.Hostname(); err == nil {
+		return h
+	}
+	return ""
 }
 
 func parseBool(s string) bool {
@@ -845,7 +877,41 @@ func wrapHandler(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// requestHeaders returns the request headers as sent. Go keeps Host out of
+// r.Header, so it is added back from r.Host.
+func requestHeaders(r *http.Request) map[string]string {
+	headers := make(map[string]string, len(r.Header)+1)
+	for k, v := range r.Header {
+		headers[k] = strings.Join(v, ", ")
+	}
+	if r.Host != "" {
+		headers["Host"] = r.Host
+	}
+	return headers
+}
+
+// echoResponse describes a request, so a test or a proxy setup can see what reached
+// this instance.
+type echoResponse struct {
+	Name       string            `json:"name"`
+	Hostname   string            `json:"hostname"`
+	Method     string            `json:"method"`
+	URI        string            `json:"uri"`
+	Host       string            `json:"host"`
+	Proto      string            `json:"proto"`
+	TLS        bool              `json:"tls"`
+	RemoteAddr string            `json:"remote_addr"`
+	Headers    map[string]string `json:"headers"`
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(v)
+}
+
 func serveStatic(cache *fileCache, cfg config, proxies []proxyHandler) http.HandlerFunc {
+	hostname, _ := os.Hostname()
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == cfg.healthPath {
 			w.Header().Set("Content-Type", "application/json")
@@ -854,19 +920,23 @@ func serveStatic(cache *fileCache, cfg config, proxies []proxyHandler) http.Hand
 			return
 		}
 
+		if cfg.echoMode {
+			writeJSON(w, echoResponse{
+				Name:       cfg.serverName,
+				Hostname:   hostname,
+				Method:     r.Method,
+				URI:        r.URL.RequestURI(),
+				Host:       r.Host,
+				Proto:      r.Proto,
+				TLS:        r.TLS != nil,
+				RemoteAddr: r.RemoteAddr,
+				Headers:    requestHeaders(r),
+			})
+			return
+		}
+
 		if r.URL.Path == cfg.headersPath && cfg.showHeaders {
-			headers := make(map[string]string)
-			keys := make([]string, 0, len(r.Header))
-			for k := range r.Header {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				headers[k] = strings.Join(r.Header[k], ", ")
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(headers)
+			writeJSON(w, requestHeaders(r))
 			return
 		}
 
@@ -908,22 +978,29 @@ func main() {
 	cfg := loadConfig()
 	cache := newFileCache(cfg)
 
-	vars := loadVariables(cfg)
-	if err := cache.seedIndex(vars); err != nil {
-		log.Fatalf("Failed to process index template: %v", err)
+	// Echo mode serves no files, so there is no index to prepare.
+	if !cfg.echoMode {
+		vars := loadVariables(cfg)
+		if err := cache.seedIndex(vars); err != nil {
+			log.Fatalf("Failed to process index template: %v", err)
+		}
 	}
 
 	proxies := buildProxyHandlers(cfg.proxyRoutes, cfg.proxyTimeout, cfg.proxyCAFile, cfg.proxyInsecure)
 	handler := wrapHandler(serveStatic(cache, cfg, proxies))
 
 	log.Printf("byjg/static-httpserver %s", version)
-	if cfg.spaMode {
-		log.Printf("SPA mode enabled")
-	}
-	if cache.disabled {
-		log.Printf("Cache disabled")
+	if cfg.echoMode {
+		log.Printf("Echo mode enabled, name: %s", cfg.serverName)
 	} else {
-		log.Printf("Cache max size: %d bytes, max file size: %d bytes", cache.maxSize, cache.maxFileSize)
+		if cfg.spaMode {
+			log.Printf("SPA mode enabled")
+		}
+		if cache.disabled {
+			log.Printf("Cache disabled")
+		} else {
+			log.Printf("Cache max size: %d bytes, max file size: %d bytes", cache.maxSize, cache.maxFileSize)
+		}
 	}
 	for _, r := range cfg.proxyRoutes {
 		log.Printf("Proxy: %s -> %s (timeout: %s)", routePrefix(r.prefix), r.target, cfg.proxyTimeout)
