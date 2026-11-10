@@ -53,6 +53,14 @@ apt install static-httpserver
 yum install static-httpserver
 ```
 
+### Alpine
+
+Add the [ByJG package repository](https://opensource.byjg.com/docs/packages) (Alpine tab), then:
+
+```bash
+apk add static-httpserver
+```
+
 ### Homebrew
 
 On macOS (or Linux) with [Homebrew](https://brew.sh):
