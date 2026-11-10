@@ -55,16 +55,11 @@ yum install static-httpserver
 
 ### Alpine
 
-Each release has an `.apk` for amd64 and arm64. Download the latest one for this machine and install it:
+Add the [ByJG package repository](https://opensource.byjg.com/docs/packages) (Alpine tab), then:
 
 ```bash
-VERSION=$(wget -qO- https://api.github.com/repos/byjg/docker-static-httpserver/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
-ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
-wget "https://github.com/byjg/docker-static-httpserver/releases/download/v${VERSION}/static-httpserver_${VERSION}_linux_${ARCH}.apk"
-apk add --allow-untrusted "static-httpserver_${VERSION}_linux_${ARCH}.apk"
+apk add static-httpserver
 ```
-
-The package is not signed, hence `--allow-untrusted`, and is not in a repository: run the same command again for a new version ([Package Repository](https://opensource.byjg.com/docs/packages#install-a-package), Alpine tab).
 
 ### Homebrew
 
