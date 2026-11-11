@@ -41,24 +41,14 @@ static-httpserver --root-dir .
 docker pull byjg/static-httpserver
 ```
 
-### deb/rpm
+### Linux Packages (Debian/Fedora/Alpine)
 
-Add the [ByJG package repository](https://opensource.byjg.com/docs/packages), then:
-
-```bash
-# Debian/Ubuntu
-apt install static-httpserver
-
-# RHEL/CentOS
-yum install static-httpserver
-```
-
-### Alpine
-
-Add the [ByJG package repository](https://opensource.byjg.com/docs/packages) (Alpine tab), then:
+Add the [ByJG package repository](https://opensource.byjg.com/docs/packages#setup) for your distribution, then:
 
 ```bash
-apk add static-httpserver
+sudo apt install static-httpserver   # Debian/Ubuntu
+sudo dnf install static-httpserver   # Fedora/RHEL
+sudo apk add static-httpserver       # Alpine
 ```
 
 ### Homebrew
